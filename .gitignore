@@ -12,3 +12,6 @@ android/
 
 test-results/
 playwright-report/
+
+# Local scratch work
+work/

@@ -18,3 +18,16 @@ test('binary PDF, metadata and document draft survive independent reads; deletin
   assert.equal(await readDocumentBytes(doc.id), undefined);
   assert.equal((await listDocuments()).some(d => d.id === doc.id), false);
 });
+
+test('working copies survive reads and never overwrite the imported original', async () => {
+  const { saveWorkingCopy, readWorkingCopy } = await import('../src/utils/documentStore');
+  const original = new Uint8Array([37,80,68,70,1]);
+  await saveDocument(doc, original);
+  const edited = new Uint8Array([37,80,68,70,2]);
+  await saveWorkingCopy({ ...doc, hasWorkingCopy:true }, edited);
+  edited[4]=99;
+  assert.deepEqual(await readDocumentBytes(doc.id), original);
+  assert.deepEqual(await readWorkingCopy(doc.id), new Uint8Array([37,80,68,70,2]));
+  await deleteStoredDocument(doc.id);
+  assert.equal(await readWorkingCopy(doc.id),undefined);
+});

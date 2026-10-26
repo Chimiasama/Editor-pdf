@@ -65,6 +65,8 @@ export interface PdfDocumentRecord {
   category?: string;
   lastOpenedAt: number;
   createdAt: number;
+  hasWorkingCopy?: boolean;
+  archivedPageMetadata?: Record<number, PageMetadata>;
   documentContent?: import('@tiptap/react').JSONContent;
   pdfDataUri?: string; // base64 or object url
   tableOfContents: TocItem[];

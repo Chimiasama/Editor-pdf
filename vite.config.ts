@@ -7,6 +7,9 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    worker: { format: 'es' },
+    build: { target: 'esnext' },
+    optimizeDeps: { exclude: ['mupdf'] },
     plugins: [react(), tailwindcss(), {
       name: 'bundle-pdfjs-assets',
       closeBundle() {
@@ -25,7 +28,7 @@ export default defineConfig(() => {
     }],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': import.meta.dirname,
       },
     },
     server: {

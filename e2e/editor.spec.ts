@@ -1,122 +1,352 @@
-import { test, expect, type Page, type Download } from '@playwright/test';
-import { PDFDocument } from 'pdf-lib';
-import { readFile } from 'node:fs/promises';
-async function openFixture(page: Page) {
+import { test, expect, type Page, type Download } from "@playwright/test";
+import { PDFDocument, rgb } from "pdf-lib";
+import * as mupdf from "mupdf";
+import { readFile } from "node:fs/promises";
+function blackImage() {
+  const pixmap = new mupdf.Pixmap(
+    mupdf.ColorSpace.DeviceRGB,
+    [0, 0, 10, 10],
+    false,
+  );
+  pixmap.getPixels().fill(0);
+  try {
+    return Buffer.from(pixmap.asPNG());
+  } finally {
+    pixmap.destroy();
+  }
+}
+async function fixture() {
   const pdf = await PDFDocument.create();
-  pdf.addPage([600, 800]).drawText('Original editable document', { x: 50, y: 700, size: 18 });
-  pdf.addPage([600, 800]).drawText('Second page content', { x: 50, y: 700, size: 18 });
-  await page.goto('/');
-  await page.getByLabel('Abrir arquivo PDF').setInputFiles({ name: 'mobile-test.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await pdf.save()) });
-  await expect(page.getByRole('heading', { name: 'mobile-test.pdf' })).toBeVisible();
-  await expect(page.getByText('Carregando página…')).not.toBeVisible();
-  await expect(page.locator('canvas').first()).toHaveJSProperty('width', 358);
+  const page = pdf.addPage([600, 800]);
+  page.drawRectangle({
+    x: 0,
+    y: 0,
+    width: 600,
+    height: 800,
+    color: rgb(0.92, 0.96, 0.91),
+  });
+  page.drawText("Nome: Joao da Silva", { x: 50, y: 700, size: 18 });
+  page.drawText("Um livro para revisar", { x: 50, y: 650, size: 15 });
+  const image = await pdf.embedPng(blackImage());
+  page.drawImage(image, { x: 100, y: 250, width: 150, height: 100 });
+  pdf
+    .addPage([600, 800])
+    .drawText("Segunda pagina preservada", { x: 50, y: 700, size: 18 });
+  return Buffer.from(await pdf.save());
 }
-async function extractDownload(page: Page, download: Download) {
-  const path = await download.path();
-  const bytes = [...await readFile(path!)];
-  const pdf = await PDFDocument.load(new Uint8Array(bytes));
-  const text = await page.evaluate(async data => {
-    const { loadPdfJsDocument } = await import('/src/utils/pdfEngine.ts' as string);
-    const document = await loadPdfJsDocument(new Uint8Array(data));
-    const parts: string[] = [];
-    for (let n = 1; n <= document.numPages; n++) {
-      const content = await (await document.getPage(n)).getTextContent();
-      parts.push(content.items.map((i: any) => i.str || '').join(' '));
+async function openFixture(page: Page) {
+  await page.goto("/");
+  await page
+    .getByLabel("Abrir arquivo PDF")
+    .setInputFiles({
+      name: "meu-livro.pdf",
+      mimeType: "application/pdf",
+      buffer: await fixture(),
+    });
+  await expect(
+    page.getByRole("heading", { name: "meu-livro.pdf", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Carregando página…")).not.toBeVisible();
+  await expect(page.locator("canvas")).toBeVisible();
+}
+async function readDownload(download: Download) {
+  const bytes = await readFile((await download.path())!);
+  const pdf = new mupdf.PDFDocument(bytes);
+  const texts: string[] = [];
+  let images = 0;
+  try {
+    for (let i = 0; i < pdf.countPages(); i++) {
+      const p = pdf.loadPage(i);
+      const text = p.toStructuredText("preserve-images");
+      texts.push(text.asText());
+      text.walk({
+        onImageBlock(_r, _t, img) {
+          images++;
+          img.destroy();
+        },
+      });
+      text.destroy();
+      p.destroy();
     }
-    await document.loadingTask.destroy();
-    return parts.join('\n');
-  }, bytes);
-  return { pdf, text };
+    return { text: texts.join("\n"), pages: pdf.countPages(), images };
+  } finally {
+    pdf.destroy();
+  }
 }
-test('mobile import, edit, undo, restart and export retain real PDF bytes', async ({ page }) => {
-  await openFixture(page);
-  await page.getByRole('button', { name: '+ Texto', exact: true }).click();
-  const box = await page.locator('canvas').first().boundingBox();
-  await page.touchscreen.tap(box!.x + 35, box!.y + 120);
-  await page.getByLabel('Texto do bloco').fill('Edição persistente');
-  await page.getByRole('button', { name: 'Aplicar texto' }).click();
-  await expect(page.locator('[data-annotation]')).toHaveCount(1);
-  await page.getByRole('button', { name: 'Desfazer', exact: true }).click();
-  await expect(page.locator('[data-annotation]')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Refazer', exact: true }).click();
-  await expect(page.locator('[data-annotation]')).toHaveCount(1);
-  await expect(page.getByRole('status').filter({ hasText: 'Salvo no aparelho' })).toBeVisible();
-  await page.reload();
-  await page.getByRole('button').filter({ hasText: 'mobile-test.pdf' }).click();
-  await expect(page.locator('[data-annotation]')).toHaveCount(1);
-  const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Exportar PDF', exact: true }).click();
-  const result = await extractDownload(page, await download);
-  expect(result.pdf.getPageCount()).toBe(2);
-  expect(result.text).toContain('Edição persistente');
-  expect(result.text).toContain('Original editable document');
+async function exportPdf(page: Page) {
+  const pending = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Salvar cópia", exact: true }).click();
+  return readDownload(await pending);
+}
+async function editName(page: Page, value = "Nome: João de Souza") {
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Editar: Nome: Joao da Silva", exact: true })
+    .click();
+  await expect(page.getByLabel("Texto do trecho")).toHaveValue(
+    "Nome: Joao da Silva",
+  );
+  await page.getByLabel("Texto do trecho").fill(value);
+  await page
+    .getByRole("button", { name: "Aplicar alteração", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Salvo no aparelho" }),
+  ).toBeVisible();
+}
+
+test("starts with a clean import library and no AI or sample books", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "Sua biblioteca começa aqui" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Gemini|Crônicas de Eldoria/)).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Abrir PDF do aparelho" }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({ path: "work/library-mobile.png", fullPage: true });
 });
-test('existing text opens a populated correction editor; document mode flows and persists text', async ({ page }) => {
+test("real text replacement, undo/redo, persistence and export on a mobile viewport", async ({
+  page,
+}) => {
   await openFixture(page);
-  await page.getByRole('button', { name: 'Corrigir texto', exact: true }).click();
-  await page.getByRole('button', { name: 'Corrigir: Original editable document' }).click();
-  await expect(page.getByLabel('Texto do bloco')).toHaveValue('Original editable document');
-  await page.getByLabel('Texto do bloco').fill('Trecho corrigido');
-  await page.getByRole('button', { name: 'Aplicar texto', exact: true }).click();
-  const correctionDownload = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Exportar PDF', exact: true }).click();
-  const correction = await extractDownload(page, await correctionDownload);
-  expect(correction.text).toContain('Trecho corrigido');
-  expect(correction.text).toContain('Original editable document'); // visual correction must never be described as secure redaction
-  await page.getByRole('button', { name: 'Modo Documento', exact: true }).click();
-  await page.getByRole('button', { name: 'Converter texto do PDF' }).click();
-  const editor = page.getByRole('textbox', { name: 'Conteúdo do documento' });
-  await expect(editor).toContainText('Original editable document');
-  await editor.fill(('Texto revisado com ação e coração.\n').repeat(100));
-  await expect(page.getByRole('status')).toHaveText('Salvo no aparelho');
-  const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Exportar PDF', exact: true }).click();
-  const result = await extractDownload(page, await download);
-  expect(result.pdf.getPageCount()).toBeGreaterThan(1);
-  expect(result.text).toContain('Texto revisado com ação e coração.');
-  expect(result.text).not.toContain('Original editable document');
+  await editName(page);
+  await expect(
+    page.getByRole("button", {
+      name: "Editar: Nome: João de Souza",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Desfazer", exact: true }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "Editar: Nome: Joao da Silva",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Refazer", exact: true }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "Editar: Nome: João de Souza",
+      exact: true,
+    }),
+  ).toBeVisible();
+  const exported = await exportPdf(page);
+  expect(exported.text).toContain("João de Souza");
+  expect(exported.text).not.toContain("Joao da Silva");
+  expect(exported.text).toContain("Segunda pagina preservada");
+  expect(exported.pages).toBe(2);
+  expect(exported.images).toBe(1);
   await page.reload();
-  await page.getByRole('button').filter({ hasText: 'mobile-test.pdf' }).click();
-  await page.getByRole('button', { name: 'Modo Documento', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: 'Conteúdo do documento' })).toContainText('Texto revisado com ação e coração.');
+  await page.getByRole("button").filter({ hasText: "meu-livro.pdf" }).click();
+  await expect(page.getByText("Carregando página…")).not.toBeVisible();
+  const reopened = await exportPdf(page);
+  expect(reopened.text).toContain("João de Souza");
+  expect(reopened.text).not.toContain("Joao da Silva");
 });
-test('two-finger pinch zooms in reading mode without creating edits', async ({ page }) => {
+test("adds text, removes an actual image, navigates pages and retains the original backup", async ({
+  page,
+}) => {
   await openFixture(page);
-  const session = await page.context().newCDPSession(page);
-  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 120, y: 300 }, { x: 220, y: 300 }] });
-  await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 80, y: 300 }, { x: 260, y: 300 }] });
-  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await expect(page.locator('canvas').first()).not.toHaveJSProperty('width', 358);
-  await expect(page.locator('[data-annotation]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Adicionar texto", exact: true })
+    .click();
+  const canvas = await page.locator("canvas").boundingBox();
+  await page.touchscreen.tap(canvas!.x + 35, canvas!.y + 145);
+  await page.getByLabel("Texto do trecho").fill("Minha anotação");
+  await page
+    .getByRole("button", { name: "Aplicar alteração", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Salvo no aparelho" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Imagens", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Selecionar imagem 0", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Remover imagem", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(
+    page.getByText("Nenhuma imagem separada foi encontrada.", { exact: false }),
+  ).toBeVisible();
+  const exported = await exportPdf(page);
+  expect(exported.images).toBe(0);
+  expect(exported.text).toContain("Minha anotação");
+  expect(exported.text).toContain("Joao da Silva");
+  await page.getByRole("button", { name: "Próxima página" }).click();
+  await expect(page.getByLabel("Número da página")).toHaveValue("2");
+  await page.getByRole("button", { name: "Página anterior" }).click();
+  await expect(page.getByLabel("Número da página")).toHaveValue("1");
+  await page.getByRole("button", { name: "Mais opções" }).click();
+  await page
+    .getByRole("button", { name: "Restaurar PDF original", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Restaurar original", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  const original = await exportPdf(page);
+  expect(original.images).toBe(1);
+  expect(original.text).not.toContain("Minha anotação");
+});
+test("inserts an image from the device and can remove it again", async ({
+  page,
+}) => {
+  await openFixture(page);
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Inserir imagem", exact: true })
+    .click();
+  const box = await page.locator("canvas").boundingBox();
+  await page.touchscreen.tap(box!.x + 15, box!.y + 160);
+  await page
+    .getByLabel("Escolher imagem")
+    .setInputFiles({
+      name: "desenho.png",
+      mimeType: "image/png",
+      buffer: blackImage(),
+    });
+  await expect(page.getByAltText("Prévia da imagem")).toBeVisible();
+  await page.getByRole("button", { name: "Inserir na página" }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Selecionar imagem/ }),
+  ).toHaveCount(2);
+  const exported = await exportPdf(page);
+  expect(exported.images).toBe(2);
+});
+test("a scanned page explains why text cannot be edited", async ({ page }) => {
+  const pdf = await PDFDocument.create();
+  const image = await pdf.embedPng(blackImage());
+  pdf
+    .addPage([300, 400])
+    .drawImage(image, { x: 0, y: 0, width: 300, height: 400 });
+  await page.goto("/");
+  await page
+    .getByLabel("Abrir arquivo PDF")
+    .setInputFiles({
+      name: "scan.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from(await pdf.save()),
+    });
+  await expect(
+    page.getByRole("heading", { name: "scan.pdf", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  await expect(
+    page.getByText(/Não há texto editável nesta página/),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /Editar:/ })).toHaveCount(0);
+});
+test("invalid PDF fails cleanly and the next import still works", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByLabel("Abrir arquivo PDF")
+    .setInputFiles({
+      name: "quebrado.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("not a PDF"),
+    });
+  await expect(page.getByRole("alert")).toBeVisible();
+  await openFixture(page);
+  await expect(page.getByRole("alert")).not.toBeVisible();
+});
+test("reader layout fits mobile, keyboard dialog is contained and desktop layout remains functional", async ({
+  page,
+}) => {
+  await openFixture(page);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  const box = await page.locator("canvas").boundingBox();
+  expect(box!.width).toBeLessThan(390);
+  expect(box!.width).toBeGreaterThan(300);
+  await page.screenshot({ path: "work/reader-mobile.png", fullPage: true });
+  await editName(page);
+  await page.screenshot({ path: "work/edit-mobile.png", fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("button", { name: "Ler", exact: true }).click();
+  await page.getByRole("button", { name: "Páginas e índice" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Páginas", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: "work/reader-desktop.png", fullPage: true });
 });
 
-test('touch drag and resize commit one undo step without triggering reading zoom', async ({ page }) => {
+test("edit errors stay visible inside the dialog and leave original text intact", async ({
+  page,
+}) => {
   await openFixture(page);
-  await page.getByRole('button', { name: '+ Texto', exact: true }).click();
-  const canvas = await page.locator('canvas').first().boundingBox();
-  await page.touchscreen.tap(canvas!.x + 30, canvas!.y + 150);
-  await page.getByLabel('Texto do bloco').fill('Move this');
-  await page.getByRole('button', { name: 'Aplicar texto' }).click();
-  await page.getByRole('button', { name: 'Selecionar', exact: true }).click();
-  const annotation = page.locator('[data-annotation]').first();
-  const before = await annotation.boundingBox();
-  const client = await page.context().newCDPSession(page);
-  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: before!.x + 20, y: before!.y + 10 }] });
-  await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: before!.x + 55, y: before!.y + 40 }] });
-  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await expect.poll(async () => (await annotation.boundingBox())!.x).toBeGreaterThan(before!.x + 20);
-  await page.getByRole('button', { name: 'Desfazer', exact: true }).click();
-  await expect.poll(async () => Math.abs((await annotation.boundingBox())!.x - before!.x)).toBeLessThan(1);
-  await page.getByRole('button', { name: 'Desfazer', exact: true }).click();
-  await expect(page.locator('[data-annotation]')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Refazer', exact: true }).click();
-  await page.getByRole('button', { name: 'Selecionar', exact: true }).click();
-  await annotation.tap();
-  const handle = page.getByRole('button', { name: 'Redimensionar anotação' });
-  const h = await handle.boundingBox();
-  const oldWidth = (await annotation.boundingBox())!.width;
-  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: h!.x + 16, y: h!.y + 16 }] });
-  await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: h!.x + 46, y: h!.y + 36 }] });
-  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await expect.poll(async () => (await annotation.boundingBox())!.width).toBeGreaterThan(oldWidth + 15);
+  await page.getByRole("button", { name: "Editar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Editar: Nome: Joao da Silva", exact: true })
+    .click();
+  await page
+    .getByLabel("Texto do trecho")
+    .fill("Esta frase e longa demais para caber no espaco original da pagina");
+  await page.getByLabel("Ajustar o tamanho ao espaço original").uncheck();
+  await page
+    .getByRole("button", { name: "Aplicar alteração", exact: true })
+    .click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    "não cabe",
+  );
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  const exported = await exportPdf(page);
+  expect(exported.text).toContain("Joao da Silva");
+});
+test("password dialog unlocks the file and the exported copy reopens without corruption", async ({
+  page,
+}) => {
+  const raw = new mupdf.PDFDocument(await fixture());
+  const buffer = raw.saveToBuffer(
+    "encrypt=aes-256,user-password=teste,owner-password=dono",
+  );
+  const bytes = Buffer.from(buffer.asUint8Array());
+  buffer.destroy();
+  raw.destroy();
+  await page.goto("/");
+  await page
+    .getByLabel("Abrir arquivo PDF")
+    .setInputFiles({
+      name: "protegido.pdf",
+      mimeType: "application/pdf",
+      buffer: bytes,
+    });
+  await expect(
+    page.getByRole("dialog", { name: "PDF protegido por senha" }),
+  ).toBeVisible();
+  await page.getByLabel("Senha", { exact: true }).fill("errada");
+  await page
+    .getByRole("button", { name: "Abrir documento", exact: true })
+    .click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    "Senha incorreta",
+  );
+  await page.getByLabel("Senha", { exact: true }).fill("teste");
+  await page
+    .getByRole("button", { name: "Abrir documento", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "protegido.pdf", exact: true }),
+  ).toBeVisible();
+  await editName(page);
+  const result = await exportPdf(page);
+  expect(result.text).toContain("João de Souza");
+  expect(result.text).not.toContain("Joao da Silva");
 });

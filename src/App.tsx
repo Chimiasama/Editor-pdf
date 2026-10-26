@@ -1,555 +1,1578 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import {
-  PdfDocumentRecord,
-  PageAnnotation,
-  PageMetadata,
-  AnnotationType,
-  EditorTool,
-} from './types/pdf';
-import { createSampleRpgPdf } from './utils/samplePdfGenerator';
-import { loadPdfJsDocument, exportEditedPdf, downloadFile } from './utils/pdfEngine';
-import { DocumentLibrary } from './components/DocumentLibrary';
-import { EditorToolbar } from './components/EditorToolbar';
-import { PdfCanvasEditor } from './components/PdfCanvasEditor';
-import { DocumentSidebar } from './components/DocumentSidebar';
-import { ThumbnailDrawer } from './components/ThumbnailDrawer';
-import { CropModal } from './components/CropModal';
-import { DocumentEditor } from './components/DocumentEditor';
-import * as store from './utils/documentStore';
-import { readOutline } from './utils/pdfText';
-import { createHistory, recordEdit, undoEdit, redoEdit, type EditHistory } from './utils/editHistory';
-
-// Storage key for documents list
-const STORAGE_DOCS_KEY = 'pdf_studio_documents_v1';
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  FileText,
+  FolderOpen,
+  ImagePlus,
+  Image as ImageIcon,
+  LayoutList,
+  LoaderCircle,
+  Maximize,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Redo2,
+  RotateCw,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Type,
+  Undo2,
+  Upload,
+  X,
+  ZoomIn,
+  ZoomOut,
+  BookOpen,
+  Info,
+} from "lucide-react";
+import { PdfClient } from "./engine/client";
+import type {
+  PdfEdit,
+  PdfInfo,
+  PageContent,
+  TextRun,
+  PageImage,
+  HistoryState,
+} from "./engine/types";
+import { ReaderPage, type ReaderTool } from "./components/ReaderPage";
+import { Modal } from "./components/Modal";
+import * as store from "./utils/documentStore";
+import type { PdfDocumentRecord } from "./types/pdf";
+import { downloadFile } from "./utils/downloadFile";
+const DocumentEditor = lazy(() =>
+  import("./components/DocumentEditor").then((m) => ({
+    default: m.DocumentEditor,
+  })),
+);
+const emptyHistory: HistoryState = { canUndo: false, canRedo: false };
+const errorMessage = (e: unknown) =>
+  e instanceof Error ? e.message : String(e);
+const formatSize = (n: number) =>
+  n < 1024 * 1024
+    ? `${Math.max(1, Math.round(n / 1024))} KB`
+    : `${(n / 1024 / 1024).toFixed(1)} MB`;
+const copyName = (name: string) => name.replace(/\.pdf$/i, "") + "_editado.pdf";
 
 export default function App() {
   const [documents, setDocuments] = useState<PdfDocumentRecord[]>([]);
-  const [activeDocId, setActiveDocId] = useState<string | null>(null);
-  const [isLoadingSample, setIsLoadingSample] = useState(false);
-
-  // In-memory binary cache for active PDF document
-  const pdfBytesCache = useRef<Record<string, Uint8Array>>({});
-
-  // Active Document State
-  const activeDoc = documents.find((d) => d.id === activeDocId) || null;
-  const [pdfProxy, setPdfProxy] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [scale, setScale] = useState<number>(1.15);
-  const [activeTool, setActiveTool] = useState<EditorTool>('pan');
-  const [readingTheme, setReadingTheme] = useState<'light' | 'dark' | 'sepia'>('light');
-
-  // UI Panels
-  const [isDocumentPanelOpen, setIsDocumentPanelOpen] = useState<boolean>(false);
-  const [isThumbnailDrawerOpen, setIsThumbnailDrawerOpen] = useState<boolean>(false);
-  const [isCropModalOpen, setIsCropModalOpen] = useState<boolean>(false);
-  const [isExporting, setIsExporting] = useState<boolean>(false);
-
-  const documentsRef = useRef<PdfDocumentRecord[]>([]);
-  const histories = useRef<Record<string, EditHistory<Record<number, PageMetadata>>>>({});
-  const [isReady, setIsReady] = useState(false);
-  const [saveStatus, setSaveStatus] = useState('Carregando biblioteca…');
-  const [mode, setMode] = useState<'pdf' | 'document'>('pdf');
-  const saveQueue = useRef(Promise.resolve());
-  const saveVersion = useRef(0);
-  const activeHistory = activeDoc ? histories.current[activeDoc.id] : undefined;
-
-  // Status Notification Toast
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
+  const [ready, setReady] = useState(false);
+  const [active, setActive] = useState<PdfDocumentRecord | null>(null);
+  const activeRef = useRef<PdfDocumentRecord | null>(null);
+  const clientRef = useRef<PdfClient | null>(null);
+  const [info, setInfo] = useState<PdfInfo | null>(null);
+  const [content, setContent] = useState<PageContent | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageInput, setPageInput] = useState("1");
+  const [revision, setRevision] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [tool, setTool] = useState<ReaderTool>("read");
+  const [history, setHistory] = useState(emptyHistory);
+  const [busy, setBusy] = useState("");
+  const busyRef = useRef(false);
+  const [saveStatus, setSaveStatus] = useState("");
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState("");
+  const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [navigation, setNavigation] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const [about, setAbout] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [textEditor, setTextEditor] = useState<{
+    run?: TextRun;
+    point?: [number, number];
+  } | null>(null);
+  const [text, setText] = useState("");
+  const [fontSize, setFontSize] = useState(12);
+  const [color, setColor] = useState("#171717");
+  const [fit, setFit] = useState(true);
+  const [selectedImage, setSelectedImage] = useState<PageImage | null>(null);
+  const [imagePoint, setImagePoint] = useState<[number, number] | null>(null);
+  const [imageFile, setImageFile] = useState<{
+    bytes: Uint8Array;
+    url: string;
+    ratio: number;
+    name: string;
+  } | null>(null);
+  const [imageWidth, setImageWidth] = useState(35);
+  const [imageBackground, setImageBackground] = useState(false);
+  const [deleting, setDeleting] = useState<PdfDocumentRecord | null>(null);
+  const [restore, setRestore] = useState(false);
+  const [passwordJob, setPasswordJob] = useState<{
+    bytes: Uint8Array;
+    doc?: PdfDocumentRecord;
+    name: string;
+    working?: boolean;
+  } | null>(null);
+  const [password, setPassword] = useState("");
+  const [legacy, setLegacy] = useState<{
+    doc: PdfDocumentRecord;
+    bytes: Uint8Array;
+  } | null>(null);
+  const [documentMode, setDocumentMode] = useState(false);
+  const [documentProxy, setDocumentProxy] = useState<any>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const notice = (message: string) => setToast(message);
+  const refreshLibrary = () => store.listDocuments().then(setDocuments);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      let saved = await store.listDocuments();
-      if (!saved.length) {
-        const legacy = JSON.parse(localStorage.getItem(STORAGE_DOCS_KEY) || '[]');
-        if (Array.isArray(legacy)) {
-          saved = legacy;
-          for (const doc of saved) await store.saveDocument(doc);
-          localStorage.removeItem(STORAGE_DOCS_KEY);
-        }
-      }
-      if (!cancelled) {
-        documentsRef.current = saved;
-        setDocuments(saved);
-        setSaveStatus('Salvo no aparelho');
-        setIsReady(true);
-      }
-    })().catch(error => {
-      if (!cancelled) { setSaveStatus('Falha ao abrir armazenamento: ' + error.message); setIsReady(true); }
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  const syncDocumentsToStorage = (updatedDocs: PdfDocumentRecord[]) => {
-    const previous = documentsRef.current;
-    documentsRef.current = updatedDocs;
-    setDocuments(updatedDocs);
-    const changed = updatedDocs.filter(doc => previous.find(old => old.id === doc.id) !== doc);
-    const version = ++saveVersion.current;
-    setSaveStatus('Salvando…');
-    const operation = saveQueue.current.then(async () => {
-      for (const doc of changed) await store.saveDocument(doc);
-    });
-    saveQueue.current = operation.catch(() => {});
-    operation.then(() => { if (version === saveVersion.current) setSaveStatus('Salvo no aparelho'); }).catch(error => setSaveStatus('Não foi salvo: ' + error.message));
-  };
-
-  // Helper to generate Sample RPG Book
-  const handleCreateSampleRpg = async (isInitial = false) => {
-    setIsLoadingSample(true);
-    try {
-      const { bytes, dataUri } = await createSampleRpgPdf();
-      const newDocId = `doc-rpg-${Date.now()}`;
-      pdfBytesCache.current[newDocId] = bytes;
-
-      const newDoc: PdfDocumentRecord = {
-        id: newDocId,
-        title: 'Crônicas de Eldoria - Livro de Regras do Aventureiro (RPG).pdf',
-        fileSizeFormatted: '1.2 MB',
-        pageCount: 5,
-        isFavorite: true,
-        category: 'RPG',
-        lastOpenedAt: Date.now(),
-        createdAt: Date.now(),
-        pdfDataUri: dataUri,
-        tableOfContents: [
-          {
-            id: 'toc-1',
-            title: 'Capítulo 1: Introdução & Regras Básicas',
-            pageNumber: 2,
-            category: 'Regras',
-            description: 'Conceito do jogo, testes de atributos e rolagens de d20',
-          },
-          {
-            id: 'toc-2',
-            title: 'Capítulo 2: Criação de Personagens',
-            pageNumber: 3,
-            category: 'Personagens',
-            description: 'Guerreiro, Mago, Ladino e modificadores',
-          },
-          {
-            id: 'toc-3',
-            title: 'Capítulo 3: Equipamentos & Armas',
-            pageNumber: 4,
-            category: 'Itens',
-            description: 'Tabela de armas, armaduras, escudos e poções',
-          },
-          {
-            id: 'toc-4',
-            title: 'Capítulo 4: Bestiário & Perigos',
-            pageNumber: 5,
-            category: 'Monstros',
-            description: 'Aranha gigante das cavernas e ameaças',
-          },
-        ],
-        pageMetadata: {},
-      };
-
-      await store.saveDocument(newDoc, bytes);
-      const updated = [newDoc, ...documentsRef.current.filter((d) => d.id !== newDocId)];
-      syncDocumentsToStorage(updated);
-      setMode('pdf');
-      setActiveDocId(newDocId);
-
-      if (!isInitial) {
-        showToast('Livro de exemplo criado');
-      }
-    } catch (err: any) {
-      console.error('Failed to create sample RPG:', err);
-      alert('Erro ao criar documento de teste: ' + err.message);
-    } finally {
-      setIsLoadingSample(false);
-    }
-  };
-
-  // Upload custom PDF file from device
-  const handleFileUpload = async (file: File) => {
-    try {
-    const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    const newDocId = `doc-upload-${Date.now()}`;
-    pdfBytesCache.current[newDocId] = bytes;
-
-    const blob = new Blob([bytes], { type: 'application/pdf' });
-    const dataUri = URL.createObjectURL(blob);
-
-      const tempPdf = await loadPdfJsDocument(bytes);
-      const pageCount = tempPdf.numPages;
-
-      const newDoc: PdfDocumentRecord = {
-        id: newDocId,
-        title: file.name,
-        fileSizeFormatted: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-        pageCount: pageCount,
-        isFavorite: false,
-        lastOpenedAt: Date.now(),
-        createdAt: Date.now(),
-        pdfDataUri: dataUri,
-        tableOfContents: await readOutline(tempPdf),
-        pageMetadata: {},
-      };
-
-      await store.saveDocument(newDoc, bytes);
-      await tempPdf.loadingTask.destroy();
-      const updated = [newDoc, ...documentsRef.current];
-      syncDocumentsToStorage(updated);
-      setMode('pdf');
-      setActiveDocId(newDocId);
-      showToast(`PDF "${file.name}" carregado com sucesso!`);
-    } catch (e: any) {
-      alert('Não foi possível ler o arquivo PDF: ' + e.message);
-    }
-  };
-
-  // Toggle Favorite
-  const handleToggleFavorite = (docId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const updated = documentsRef.current.map((d) => (d.id === docId ? { ...d, isFavorite: !d.isFavorite } : d));
-    syncDocumentsToStorage(updated);
-  };
-
-  // Delete Document
-  const handleDeleteDocument = async (docId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (confirm('Tem certeza que deseja excluir este PDF da lista?')) {
-      try { await saveQueue.current; await store.deleteStoredDocument(docId); } catch (error) { alert('Não foi possível excluir o arquivo.'); return; }
-      const updated = documentsRef.current.filter((d) => d.id !== docId);
-      delete pdfBytesCache.current[docId];
-      syncDocumentsToStorage(updated);
-      if (activeDocId === docId) {
-        setActiveDocId(null);
-      }
-    }
-  };
-
-  // Load PDF into PDF.js proxy when active document changes
-  useEffect(() => {
-    if (!activeDocId) {
-      setPdfProxy(null);
-      return;
-    }
-
-    let isMounted = true;
-    let loaded: pdfjsLib.PDFDocumentProxy | undefined;
-    setPdfProxy(null);
-    setCurrentPage(1);
-    setActiveTool('pan');
-    setIsDocumentPanelOpen(false);
-    setIsThumbnailDrawerOpen(false);
-    (async () => {
-      const bytes = pdfBytesCache.current[activeDocId] ?? await store.readDocumentBytes(activeDocId);
-      if (!bytes) throw new Error('Arquivo antigo não está salvo. Importe novamente pelo botão Abrir PDF.');
-      pdfBytesCache.current[activeDocId] = bytes;
-      const proxy = await loadPdfJsDocument(bytes);
-      loaded = proxy;
-      if (isMounted) {
-        setPdfProxy(proxy);
-        const page = await proxy.getPage(1);
-        const available = Math.max(240, window.innerWidth - 32);
-        setScale(Math.min(1.25, available / page.getViewport({ scale: 1 }).width));
-      } else await proxy.loadingTask.destroy();
-    })().catch(error => { if (isMounted) showToast(error.message); });
-    return () => { isMounted = false; if (loaded) void loaded.loadingTask.destroy(); };
-  }, [activeDocId]);
-
-  // Current page metadata & annotations
-  const currentPageMeta = activeDoc?.pageMetadata[currentPage] || {
-    pageNumber: currentPage,
-    rotation: 0,
-    annotations: [],
-  };
-
-  const updatePageMetadata = (updater: (prev: Record<number, PageMetadata>) => Record<number, PageMetadata>) => {
-    if (!activeDocId) return;
-    const doc = documentsRef.current.find(d => d.id === activeDocId);
-    if (!doc) return;
-    const next = updater(doc.pageMetadata || {});
-    histories.current[doc.id] = recordEdit(histories.current[doc.id] || createHistory(doc.pageMetadata || {}), next);
-    syncDocumentsToStorage(documentsRef.current.map(d => d.id === doc.id ? { ...d, pageMetadata: next, lastOpenedAt: Date.now() } : d));
-  };
-  const travelHistory = (direction: 'undo' | 'redo') => {
-    if (!activeDocId) return;
-    const history = histories.current[activeDocId];
-    if (!history) return;
-    const next = direction === 'undo' ? undoEdit(history) : redoEdit(history);
-    histories.current[activeDocId] = next;
-    syncDocumentsToStorage(documentsRef.current.map(d => d.id === activeDocId ? { ...d, pageMetadata: next.present } : d));
-  };
-  const handleUndo = () => travelHistory('undo');
-  const handleRedo = () => travelHistory('redo');
-
-  // Add Annotation to current page
-  const handleAddAnnotation = (ann: Omit<PageAnnotation, 'id' | 'createdAt'>) => {
-    const newId = `ann-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    const fullAnnotation: PageAnnotation = {
-      ...ann,
-      id: newId,
-      createdAt: Date.now(),
+    store
+      .listDocuments()
+      .then(setDocuments)
+      .catch((e) =>
+        setError("Não foi possível abrir a biblioteca: " + errorMessage(e)),
+      )
+      .finally(() => setReady(true));
+    return () => {
+      clientRef.current?.destroy();
     };
-
-    updatePageMetadata((prev) => {
-      const currentMeta = prev[ann.pageNumber] || {
-        pageNumber: ann.pageNumber,
-        rotation: 0,
-        annotations: [],
-      };
-      return {
-        ...prev,
-        [ann.pageNumber]: {
-          ...currentMeta,
-          annotations: [...currentMeta.annotations, fullAnnotation],
-        },
-      };
-    });
-
-    if (ann.type === 'whiteout') {
-      showToast('Região coberta visualmente. O conteúdo original continua no PDF.');
-    } else if (ann.type === 'image') {
-      showToast('Imagem adicionada');
-    }
-  };
-
-  // Update Annotation
-  const handleUpdateAnnotation = (id: string, updates: Partial<PageAnnotation>) => {
-    updatePageMetadata((prev) => {
-      const currentMeta = prev[currentPage];
-      if (!currentMeta) return prev;
-      return {
-        ...prev,
-        [currentPage]: {
-          ...currentMeta,
-          annotations: currentMeta.annotations.map((a) => (a.id === id ? { ...a, ...updates } : a)),
-        },
-      };
-    });
-  };
-
-  // Delete Annotation
-  const handleDeleteAnnotation = (id: string) => {
-    updatePageMetadata((prev) => {
-      const currentMeta = prev[currentPage];
-      if (!currentMeta) return prev;
-      return {
-        ...prev,
-        [currentPage]: {
-          ...currentMeta,
-          annotations: currentMeta.annotations.filter((a) => a.id !== id),
-        },
-      };
-    });
-    showToast('Edição removida');
-  };
-
-  // Rotate Page (90 deg clockwise)
-  const handleRotatePage = (targetPage?: number) => {
-    const pageNum = targetPage || currentPage;
-    updatePageMetadata((prev) => {
-      const currentMeta = prev[pageNum] || {
-        pageNumber: pageNum,
-        rotation: 0,
-        annotations: [],
-      };
-      return {
-        ...prev,
-        [pageNum]: {
-          ...currentMeta,
-          rotation: (currentMeta.rotation + 90) % 360,
-        },
-      };
-    });
-    showToast(`Página ${pageNum} girada 90°`);
-  };
-
-  // Apply Crop / Enquadramento
-  const handleApplyCrop = (crop: { top: number; bottom: number; left: number; right: number }) => {
-    updatePageMetadata((prev) => {
-      const currentMeta = prev[currentPage] || {
-        pageNumber: currentPage,
-        rotation: 0,
-        annotations: [],
-      };
-      return {
-        ...prev,
-        [currentPage]: {
-          ...currentMeta,
-          cropBox: crop,
-        },
-      };
-    });
-    showToast(`Enquadramento aplicado na Página ${currentPage}`);
-  };
-
-  // Export / Download edited PDF
-  const handleExportPdf = async () => {
-    if (!activeDoc) return;
-    setIsExporting(true);
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(""), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+  useEffect(() => {
+    setPageInput(String(page));
+  }, [page]);
+  useEffect(() => {
+    if (!active || !clientRef.current) return;
+    let cancelled = false;
+    setContent(null);
+    clientRef.current
+      .call("content", { page })
+      .then((c) => {
+        if (!cancelled) setContent(c);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(errorMessage(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active?.id, page, revision]);
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (busyRef.current || saveStatus.startsWith("Não salvo"))
+        e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [saveStatus]);
+  useEffect(
+    () => () => {
+      if (imageFile) URL.revokeObjectURL(imageFile.url);
+    },
+    [imageFile],
+  );
+  async function runTask(label: string, task: () => Promise<void>) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(label);
+    setError("");
     try {
-      const originalBytes = pdfBytesCache.current[activeDoc.id];
-      if (!originalBytes) {
-        throw new Error('Bytes originais do PDF não encontrados no cache.');
-      }
-
-      const editedBytes = await exportEditedPdf(
-        originalBytes,
-        activeDoc.pageMetadata || {},
-        activeDoc.title
-      );
-
-      // Trigger download
-      const cleanFileName = activeDoc.title.replace('.pdf', '') + '_editado.pdf';
-      await downloadFile(editedBytes, cleanFileName);
-      showToast('Cópia editada exportada');
-    } catch (err: any) {
-      console.error('Export error:', err);
-      alert('Erro ao exportar PDF: ' + err.message);
+      await task();
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
-      setIsExporting(false);
+      busyRef.current = false;
+      setBusy("");
     }
-  };
-
-  // Quick stats for thumbnails drawer
-  const pageRotations = Object.entries(activeDoc?.pageMetadata || {}).reduce(
-    (acc, [pg, meta]) => {
-      acc[Number(pg)] = meta.rotation;
-      return acc;
-    },
-    {} as Record<number, number>
-  );
-
-  const annotationsCount = Object.entries(activeDoc?.pageMetadata || {}).reduce(
-    (acc, [pg, meta]) => {
-      acc[Number(pg)] = meta.annotations?.length || 0;
-      return acc;
-    },
-    {} as Record<number, number>
-  );
-
-  if (!isReady) return <div className="p-8 text-white">Carregando biblioteca…</div>;
-
-  // VIEW 1: DOCUMENT LIBRARY
-  if (!activeDocId || !activeDoc) {
-    return (
-      <DocumentLibrary
-        storageStatus={saveStatus}
-        documents={documents}
-        onSelectDocument={(id) => { setMode('pdf'); setActiveDocId(id); }}
-        onToggleFavorite={handleToggleFavorite}
-        onDeleteDocument={handleDeleteDocument}
-        onCreateSampleRpg={() => handleCreateSampleRpg(false)}
-        onFileUpload={handleFileUpload}
-        isLoadingSample={isLoadingSample}
-      />
+  }
+  function updateActive(doc: PdfDocumentRecord) {
+    activeRef.current = doc;
+    setActive(doc);
+    setDocuments((list) => list.map((d) => (d.id === doc.id ? doc : d)));
+  }
+  async function openBytes(
+    bytes: Uint8Array,
+    name: string,
+    doc?: PdfDocumentRecord,
+    pass?: string,
+    working = false,
+  ): Promise<boolean> {
+    const nextClient = new PdfClient();
+    try {
+      const nextInfo = await nextClient.call("open", { bytes, password: pass });
+      const now = Date.now();
+      const nextDoc: PdfDocumentRecord = doc
+        ? { ...doc, pageCount: nextInfo.pageCount, lastOpenedAt: now }
+        : {
+            id: crypto.randomUUID(),
+            title: name,
+            pageCount: nextInfo.pageCount,
+            fileSizeFormatted: formatSize(bytes.length),
+            isFavorite: false,
+            lastOpenedAt: now,
+            createdAt: now,
+            tableOfContents: nextInfo.outline.map((item, i) => ({
+              id: `outline-${i}`,
+              title: item.title,
+              pageNumber: item.page,
+            })),
+            pageMetadata: {},
+          };
+      if (working) await store.saveWorkingCopy(nextDoc, bytes);
+      else await store.saveDocument(nextDoc, doc ? undefined : bytes);
+      clientRef.current?.destroy();
+      clientRef.current = nextClient;
+      activeRef.current = nextDoc;
+      setActive(nextDoc);
+      setInfo(nextInfo);
+      setPage(1);
+      setZoom(1);
+      setTool("read");
+      setHistory(emptyHistory);
+      setRevision((r) => r + 1);
+      setNavigation(false);
+      setMenu(false);
+      setQuery("");
+      setSearchOpen(false);
+      setPasswordJob(null);
+      setPassword("");
+      setSaveStatus("Salvo no aparelho");
+      await refreshLibrary();
+      return true;
+    } catch (e) {
+      nextClient.destroy();
+      if (
+        errorMessage(e) === "PASSWORD_REQUIRED" ||
+        (pass !== undefined && /Senha incorreta/.test(errorMessage(e)))
+      ) {
+        setPasswordJob({ bytes, doc, name, working });
+        if (pass) setError(errorMessage(e));
+        return false;
+      }
+      throw e;
+    }
+  }
+  function importFile(file?: File) {
+    if (!file) return;
+    void runTask("Abrindo PDF…", async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      await openBytes(bytes, file.name);
+    });
+  }
+  function openDocument(doc: PdfDocumentRecord) {
+    void runTask("Abrindo PDF…", async () => {
+      const working = await store.readWorkingCopy(doc.id);
+      const bytes = working ?? (await store.readDocumentBytes(doc.id));
+      if (!bytes)
+        throw new Error(
+          "O arquivo desta entrada antiga não está salvo. Importe novamente o PDF pelo botão Abrir PDF.",
+        );
+      if (
+        !working &&
+        Object.values(doc.pageMetadata || {}).some(
+          (p) => p.annotations.length || p.rotation || p.cropBox,
+        )
+      ) {
+        setLegacy({ doc, bytes });
+        return;
+      }
+      await openBytes(bytes, doc.title, doc);
+    });
+  }
+  async function persist() {
+    const doc = activeRef.current!;
+    setSaveStatus("Salvando…");
+    const bytes = await clientRef.current!.call("save", undefined);
+    const updated = { ...doc, hasWorkingCopy: true, lastOpenedAt: Date.now() };
+    try {
+      await store.saveWorkingCopy(updated, bytes);
+      updateActive(updated);
+      setSaveStatus("Salvo no aparelho");
+    } catch (e) {
+      setSaveStatus("Não salvo no aparelho");
+      throw new Error(
+        "A edição está aberta, mas não foi salva no aparelho. Use Salvar cópia para não perdê-la. " +
+          errorMessage(e),
+      );
+    }
+  }
+  async function mutate(edit: PdfEdit) {
+    await runTask("Aplicando alteração…", async () => {
+      const result = await clientRef.current!.call("edit", edit);
+      setHistory(result);
+      setTextEditor(null);
+      setSelectedImage(null);
+      setImagePoint(null);
+      setImageFile(null);
+      setTool(
+        edit.type === "insert-image"
+          ? "images"
+          : edit.type === "insert-text"
+            ? "text"
+            : tool,
+      );
+      setRevision((r) => r + 1);
+      notice(result.message);
+      await persist();
+    });
+  }
+  function travel(direction: "undo" | "redo") {
+    void runTask(
+      direction === "undo" ? "Desfazendo…" : "Refazendo…",
+      async () => {
+        setHistory(await clientRef.current!.call(direction, undefined));
+        setRevision((r) => r + 1);
+        await persist();
+      },
     );
   }
-
-  if (mode === 'document') return <DocumentEditor key={activeDoc.id} document={activeDoc} pdfDoc={pdfProxy}
-    onBack={() => setMode('pdf')} onChange={content => syncDocumentsToStorage(documentsRef.current.map(d => d.id === activeDoc.id ? { ...d, documentContent: content } : d))} saveStatus={saveStatus} />;
-
-  // VIEW 2: PDF VIEWER & EDITOR WORKSPACE
-  return (
-    <div className="h-dvh w-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
-      {/* Top Toolbar */}
-      <EditorToolbar
-        onDocumentMode={() => setMode('document')}
-        saveStatus={saveStatus}
-        documentTitle={activeDoc.title}
-        currentPage={currentPage}
-        totalPages={activeDoc.pageCount}
-        scale={scale}
-        activeTool={activeTool}
-        onSelectTool={setActiveTool}
-        onPageChange={setCurrentPage}
-        onZoomChange={setScale}
-        onRotatePage={() => handleRotatePage()}
-        onOpenCropModal={() => setIsCropModalOpen(true)}
-        onToggleDocumentPanel={() => setIsDocumentPanelOpen(!isDocumentPanelOpen)}
-        isDocumentPanelOpen={isDocumentPanelOpen}
-        onToggleThumbnailDrawer={() => setIsThumbnailDrawerOpen(!isThumbnailDrawerOpen)}
-        isThumbnailDrawerOpen={isThumbnailDrawerOpen}
-        readingTheme={readingTheme}
-        onToggleTheme={() =>
-          setReadingTheme(readingTheme === 'light' ? 'dark' : readingTheme === 'dark' ? 'sepia' : 'light')
-        }
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        canUndo={!!activeHistory?.past.length}
-        canRedo={!!activeHistory?.future.length}
-        onExportPdf={handleExportPdf}
-        isExporting={isExporting}
-        onBackToLibrary={() => setActiveDocId(null)}
-      />
-
-      {/* Main Workspace: Left Drawer (Thumbnails) + Center (PDF Canvas) + Right Drawer (Document Sidebar) */}
-      <div className="flex-1 flex overflow-hidden relative mb-28">
-        {/* Left Drawer: Page Thumbnails */}
-        <ThumbnailDrawer
-          pdfDoc={pdfProxy}
-          isOpen={isThumbnailDrawerOpen}
-          onClose={() => setIsThumbnailDrawerOpen(false)}
-          totalPages={activeDoc.pageCount}
-          currentPage={currentPage}
-          onSelectPage={(pg) => {
-            setCurrentPage(pg);
-            setIsThumbnailDrawerOpen(false);
+  function saveCopy() {
+    void runTask("Preparando cópia…", async () => {
+      const bytes = await clientRef.current!.call("save", undefined);
+      await downloadFile(bytes, copyName(activeRef.current!.title));
+      notice("Cópia editada pronta para salvar");
+    });
+  }
+  function back() {
+    if (busyRef.current) return;
+    if (saveStatus.startsWith("Não salvo")) {
+      setError("Salve uma cópia antes de fechar este documento.");
+      return;
+    }
+    clientRef.current?.destroy();
+    clientRef.current = null;
+    activeRef.current = null;
+    setActive(null);
+    setInfo(null);
+    setContent(null);
+    setTool("read");
+    setError("");
+    setMenu(false);
+    void refreshLibrary();
+  }
+  function selectText(run?: TextRun, point?: [number, number]) {
+    setError("");
+    setTextEditor({ run, point });
+    setText(run?.text || "");
+    setFontSize(run ? Math.round(run.size * 10) / 10 : 12);
+    setColor(run?.color || "#171717");
+    setFit(true);
+  }
+  function changePage(n: number) {
+    if (!info || busyRef.current) return;
+    setPage(Math.min(info.pageCount, Math.max(1, Math.round(n) || 1)));
+    setSelectedImage(null);
+  }
+  async function pickImage(file?: File) {
+    if (!file) return;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const url = URL.createObjectURL(new Blob([bytes], { type: file.type }));
+      const image = new Image();
+      image.src = url;
+      try {
+        await image.decode();
+      } catch {
+        URL.revokeObjectURL(url);
+        throw new Error("Não foi possível abrir a imagem. Use PNG ou JPEG.");
+      }
+      setImageFile({
+        bytes,
+        url,
+        ratio: image.naturalWidth / image.naturalHeight,
+        name: file.name,
+      });
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  function imageRect(): [number, number, number, number] | null {
+    if (!content || !imagePoint || !imageFile) return null;
+    const [x0, y0, x1, y1] = content.bounds;
+    const width = Math.min(((x1 - x0) * imageWidth) / 100, x1 - imagePoint[0]);
+    const fitted = Math.min(width, (y1 - imagePoint[1]) * imageFile.ratio);
+    return [
+      imagePoint[0],
+      imagePoint[1],
+      imagePoint[0] + fitted,
+      imagePoint[1] + fitted / imageFile.ratio,
+    ];
+  }
+  async function enterDocumentMode() {
+    setMenu(false);
+    await runTask("Preparando documento…", async () => {
+      const { loadPdfJsDocument } = await import("./utils/pdfEngine");
+      setDocumentProxy(
+        await loadPdfJsDocument(
+          await clientRef.current!.call("save", undefined),
+        ),
+      );
+      setDocumentMode(true);
+    });
+  }
+  const filtered = [...documents]
+    .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
+    .filter((d) => d.title.toLowerCase().includes(libraryQuery.toLowerCase()));
+  const editing = tool !== "read";
+  const help =
+    tool === "text"
+      ? "Toque no texto da página para alterar ou apagar."
+      : tool === "images"
+        ? "Toque em uma imagem para removê-la."
+        : tool === "add-text"
+          ? "Toque na página onde deseja escrever."
+          : tool === "add-image"
+            ? "Toque na página onde deseja inserir a imagem."
+            : "";
+  if (documentMode && active)
+    return (
+      <Suspense fallback={<div className="app-loading">Abrindo editor…</div>}>
+        <DocumentEditor
+          document={active}
+          pdfDoc={documentProxy}
+          saveStatus={saveStatus}
+          onBack={() => {
+            setDocumentMode(false);
+            void documentProxy?.destroy();
+            setDocumentProxy(null);
           }}
-          onRotatePage={handleRotatePage}
-          pageRotations={pageRotations}
-          annotationsCount={annotationsCount}
+          onChange={(data) => {
+            const doc = { ...activeRef.current!, documentContent: data };
+            updateActive(doc);
+            void store
+              .saveDocument(doc)
+              .then(() => setSaveStatus("Salvo no aparelho"))
+              .catch((e) => setError(errorMessage(e)));
+          }}
         />
-
-        {/* Center: Interactive PDF Canvas Viewport */}
-        <div className="flex-1 overflow-auto bg-slate-950 flex flex-col items-center justify-start relative">
-          <PdfCanvasEditor
-            pdfDoc={pdfProxy}
-            currentPage={currentPage}
-            scale={scale}
-            rotation={currentPageMeta.rotation || 0}
-            activeTool={activeTool}
-            annotations={currentPageMeta.annotations || []}
-            onAddAnnotation={handleAddAnnotation}
-            onUpdateAnnotation={handleUpdateAnnotation}
-            onDeleteAnnotation={handleDeleteAnnotation}
-            onZoomChange={setScale}
-            onNavigateToPage={setCurrentPage}
-            readingTheme={readingTheme}
-          />
-        </div>
-
-        {/* Right Drawer: Document Sidebar */}
-        <DocumentSidebar
-          isOpen={isDocumentPanelOpen}
-          onClose={() => setIsDocumentPanelOpen(false)}
-          currentPage={currentPage}
-          tableOfContents={activeDoc.tableOfContents || []}
-          onNavigateToPage={(pg) => setCurrentPage(pg)}
-        />
-      </div>
-
-      {/* Crop / Enquadramento Modal */}
-      <CropModal
-        isOpen={isCropModalOpen}
-        onClose={() => setIsCropModalOpen(false)}
-        currentPage={currentPage}
-        initialCrop={currentPageMeta.cropBox}
-        onApplyCrop={handleApplyCrop}
+      </Suspense>
+    );
+  return (
+    <div className={`app ${active ? "workspace" : "library"}`}>
+      <input
+        type="file"
+        accept="application/pdf,.pdf"
+        aria-label="Abrir arquivo PDF"
+        ref={fileInput}
+        hidden
+        onChange={(e) => {
+          importFile(e.target.files?.[0]);
+          e.target.value = "";
+        }}
       />
-
-      {/* Floating Toast Notification */}
-      {toastMessage && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-900 border border-indigo-500/50 text-white text-xs font-semibold shadow-2xl flex items-center space-x-2 animate-in fade-in slide-in-from-bottom-3 duration-200">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span>{toastMessage}</span>
+      <input
+        type="file"
+        accept="image/png,image/jpeg"
+        aria-label="Escolher imagem"
+        ref={imageInput}
+        hidden
+        onChange={(e) => {
+          void pickImage(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      <header className="topbar">
+        {active ? (
+          <>
+            <button
+              className="icon-button"
+              aria-label="Voltar à biblioteca"
+              onClick={back}
+              disabled={!!busy}
+            >
+              <ArrowLeft size={21} />
+            </button>
+            <span className="file-badge compact">
+              <FileText size={20} />
+            </span>
+            <div className="document-heading">
+              <h1 title={active.title}>{active.title}</h1>
+              <span className="save-status" role="status">
+                {saveStatus === "Salvo no aparelho" && <Check size={12} />}{" "}
+                {saveStatus}
+              </span>
+            </div>
+            <div className="topbar-actions">
+              <button
+                className="button primary save-copy"
+                onClick={saveCopy}
+                disabled={!!busy}
+              >
+                <Download size={17} />
+                <span>Salvar cópia</span>
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Mais opções"
+                aria-expanded={menu}
+                onClick={() => setMenu(!menu)}
+                disabled={!!busy}
+              >
+                <MoreHorizontal size={21} />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
+              <span className="brand-icon">
+                <FileText size={21} />
+              </span>
+              Edit<span>PDF</span>
+            </a>
+            <span className="brand-caption">Seu espaço para ler e editar.</span>
+            <div className="topbar-actions">
+              <button
+                className="icon-button"
+                aria-label="Sobre o aplicativo"
+                onClick={() => setAbout(true)}
+              >
+                <Info size={20} />
+              </button>
+              <button
+                className="button primary"
+                onClick={() => fileInput.current?.click()}
+                disabled={!!busy || !ready}
+              >
+                <Plus size={18} />
+                Abrir PDF
+              </button>
+            </div>
+          </>
+        )}
+      </header>
+      {menu && active && (
+        <>
+          <button
+            className="menu-dismiss"
+            aria-label="Fechar opções"
+            onClick={() => setMenu(false)}
+          />
+          <div className="options-menu">
+            <button
+              onClick={() => {
+                setMenu(false);
+                fileInput.current?.click();
+              }}
+            >
+              <FolderOpen size={17} />
+              Abrir outro PDF
+            </button>
+            <button
+              onClick={() => {
+                setMenu(false);
+                void mutate({ type: "rotate", page });
+              }}
+            >
+              <RotateCw size={17} />
+              Girar esta página
+            </button>
+            <button onClick={enterDocumentMode}>
+              <FileText size={17} />
+              Editor de documento
+            </button>
+            <button
+              onClick={() => {
+                setMenu(false);
+                setRestore(true);
+              }}
+            >
+              <Undo2 size={17} />
+              Restaurar PDF original
+            </button>
+            <button
+              onClick={() => {
+                setMenu(false);
+                setAbout(true);
+              }}
+            >
+              <Info size={17} />
+              Sobre e licenças
+            </button>
+          </div>
+        </>
+      )}
+      {error && (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <button
+            className="icon-button"
+            aria-label="Fechar mensagem de erro"
+            onClick={() => setError("")}
+          >
+            <X size={18} />
+          </button>
         </div>
+      )}
+      {!active ? (
+        <main className="library-main">
+          <section className="welcome">
+            <span className="eyebrow">SIMPLES. DO TEU JEITO.</span>
+            <h1>
+              Teus PDFs.
+              <br />
+              <span>Novas possibilidades.</span>
+            </h1>
+            <p>
+              Abra um livro, ajuste as palavras e salve sua versão.
+              <br className="desktop-break" /> Tudo no seu aparelho, sem enviar
+              seus arquivos.
+            </p>
+            <button
+              className="button primary large"
+              onClick={() => fileInput.current?.click()}
+              disabled={!!busy || !ready}
+            >
+              <Upload size={19} />
+              Abrir PDF do aparelho
+              <ArrowRight size={18} />
+            </button>
+            <span className="local-note">
+              <ShieldCheck size={14} /> Seus arquivos ficam com você
+            </span>
+            <div className="welcome-paper" aria-hidden="true">
+              <div className="paper-label">O SEU PRÓXIMO CAPÍTULO</div>
+              <div className="paper-title">
+                Um novo
+                <br />
+                olhar sobre
+                <br />
+                <em>suas ideias.</em>
+              </div>
+              <div className="paper-lines" />
+              <div className="paper-edit">
+                <Pencil size={16} /> Faça a história ser sua.
+              </div>
+              <span className="paper-page">01</span>
+            </div>
+          </section>
+          <section className="recent">
+            <div className="section-heading">
+              <div>
+                <h2>
+                  Meus documentos <span>{documents.length}</span>
+                </h2>
+                <p>Continue de onde parou.</p>
+              </div>
+              {documents.length > 0 && (
+                <label className="library-search">
+                  <Search size={17} />
+                  <input
+                    aria-label="Buscar na biblioteca"
+                    placeholder="Buscar documento"
+                    value={libraryQuery}
+                    onChange={(e) => setLibraryQuery(e.target.value)}
+                  />
+                </label>
+              )}
+            </div>
+            {!ready ? (
+              <div className="empty-library">
+                <LoaderCircle className="spin" />
+                Carregando biblioteca…
+              </div>
+            ) : !filtered.length ? (
+              <div className="empty-library">
+                <span className="empty-icon">
+                  <FolderOpen size={25} />
+                </span>
+                <h3>
+                  {documents.length
+                    ? "Nenhum resultado"
+                    : "Sua biblioteca começa aqui"}
+                </h3>
+                <p>
+                  {documents.length
+                    ? "Tente buscar por outro nome."
+                    : "Importe um PDF do celular ou computador para começar."}
+                </p>
+                {!documents.length && (
+                  <button
+                    className="button secondary"
+                    onClick={() => fileInput.current?.click()}
+                    disabled={!!busy}
+                  >
+                    Escolher arquivo
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="document-list">
+                <div className="list-labels">
+                  <span>DOCUMENTO</span>
+                  <span>ÚLTIMA ABERTURA</span>
+                  <span />
+                </div>
+                {filtered.map((doc) => (
+                  <div className="document-row" key={doc.id}>
+                    <button
+                      className="document-open"
+                      onClick={() => openDocument(doc)}
+                      disabled={!!busy}
+                    >
+                      <span className="file-badge">
+                        <FileText size={24} />
+                        <small>PDF</small>
+                      </span>
+                      <span className="document-meta">
+                        <strong>{doc.title}</strong>
+                        <span>
+                          {doc.pageCount}{" "}
+                          {doc.pageCount === 1 ? "página" : "páginas"} <i />{" "}
+                          {doc.fileSizeFormatted}
+                          {doc.hasWorkingCopy && (
+                            <>
+                              <i />
+                              <span className="edited-label">Editado</span>
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <time>
+                        {new Date(doc.lastOpenedAt).toLocaleDateString("pt-BR")}
+                      </time>
+                      <ChevronRight className="row-arrow" size={18} />
+                    </button>
+                    <button
+                      className="icon-button delete-document"
+                      aria-label={`Excluir ${doc.title} da biblioteca`}
+                      onClick={() => setDeleting(doc)}
+                      disabled={!!busy}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+          <footer className="library-footer">
+            <span>EditPDF · Feito para suas leituras e ideias.</span>
+            <button onClick={() => setAbout(true)}>Sobre e licenças</button>
+          </footer>
+        </main>
+      ) : (
+        <>
+          <div className="reader-toolbar">
+            <div className="reader-tools">
+              <button
+                className={`button tool-button ${!editing ? "selected" : ""}`}
+                onClick={() => setTool("read")}
+                disabled={!!busy}
+              >
+                <BookOpen size={17} />
+                Ler
+              </button>
+              <button
+                className={`button tool-button ${editing ? "selected" : ""}`}
+                onClick={() => setTool(editing ? "read" : "text")}
+                disabled={!!busy || !info?.canEdit}
+              >
+                <Pencil size={17} />
+                Editar
+              </button>
+              <span className="toolbar-separator" />
+              <button
+                className="icon-button"
+                aria-label="Pesquisar nesta página"
+                aria-pressed={searchOpen}
+                onClick={() => setSearchOpen(!searchOpen)}
+              >
+                <Search size={19} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Páginas e índice"
+                aria-expanded={navigation}
+                onClick={() => setNavigation(!navigation)}
+              >
+                <LayoutList size={19} />
+              </button>
+            </div>
+            <div className="history-tools">
+              <button
+                className="icon-button"
+                aria-label="Desfazer"
+                disabled={!!busy || !history.canUndo}
+                onClick={() => travel("undo")}
+              >
+                <Undo2 size={18} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Refazer"
+                disabled={!!busy || !history.canRedo}
+                onClick={() => travel("redo")}
+              >
+                <Redo2 size={18} />
+              </button>
+            </div>
+          </div>
+          {searchOpen && (
+            <div className="page-search">
+              <Search size={17} />
+              <input
+                autoFocus
+                aria-label="Pesquisar nesta página"
+                placeholder="Pesquisar nesta página…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <span>
+                {query && content
+                  ? `${content.texts.filter((t) => t.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())).length} trechos`
+                  : ""}
+              </span>
+              <button
+                className="icon-button"
+                aria-label="Fechar pesquisa"
+                onClick={() => {
+                  setSearchOpen(false);
+                  setQuery("");
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+          )}
+          {editing && (
+            <div className="edit-toolbar" aria-label="Ferramentas de edição">
+              <button
+                className={tool === "text" ? "active" : ""}
+                onClick={() => setTool("text")}
+                disabled={!!busy}
+              >
+                <Pencil size={16} />
+                Texto existente
+              </button>
+              <button
+                className={tool === "add-text" ? "active" : ""}
+                onClick={() => setTool("add-text")}
+                disabled={!!busy}
+              >
+                <Type size={17} />
+                Adicionar texto
+              </button>
+              <button
+                className={tool === "images" ? "active" : ""}
+                onClick={() => setTool("images")}
+                disabled={!!busy}
+              >
+                <ImageIcon size={17} />
+                Imagens
+              </button>
+              <button
+                className={tool === "add-image" ? "active" : ""}
+                onClick={() => setTool("add-image")}
+                disabled={!!busy}
+              >
+                <ImagePlus size={17} />
+                Inserir imagem
+              </button>
+            </div>
+          )}
+          {help && (
+            <div className="tool-hint">
+              <span className="hint-dot" />
+              {help}
+            </div>
+          )}
+          {!info?.canEdit && (
+            <div className="info-banner">
+              Este PDF permite leitura, mas restringe alterações.
+            </div>
+          )}
+          {tool === "text" &&
+            content &&
+            !content.texts.some((t) => t.editable) && (
+              <div className="info-banner">
+                {content.texts.length
+                  ? "A direção do texto desta página ainda não é suportada para edição."
+                  : "Não há texto editável nesta página. Se for uma digitalização, será necessário OCR."}
+              </div>
+            )}
+          {tool === "images" && content && !content.images.length && (
+            <div className="info-banner">
+              Nenhuma imagem separada foi encontrada. Desenhos vetoriais ainda
+              não podem ser selecionados.
+            </div>
+          )}
+          <div className="reader-body">
+            {navigation && (
+              <>
+                <button
+                  className="sidebar-shade"
+                  aria-label="Fechar navegação"
+                  onClick={() => setNavigation(false)}
+                />
+                <aside className="page-sidebar">
+                  <div className="sidebar-heading">
+                    <h2>Páginas</h2>
+                    <button
+                      className="icon-button"
+                      aria-label="Fechar navegação"
+                      onClick={() => setNavigation(false)}
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="page-grid">
+                    {Array.from({ length: info?.pageCount || 0 }, (_, i) => (
+                      <button
+                        key={i}
+                        className={page === i + 1 ? "current" : ""}
+                        onClick={() => {
+                          changePage(i + 1);
+                          setNavigation(false);
+                        }}
+                        disabled={!!busy}
+                      >
+                        <FileText size={25} />
+                        <span>{i + 1}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {!!info?.outline.length && (
+                    <>
+                      <h3>Índice do documento</h3>
+                      <div className="outline-list">
+                        {info.outline.map((item, i) => (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              changePage(item.page);
+                              setNavigation(false);
+                            }}
+                          >
+                            {item.title}
+                            <span>{item.page}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </aside>
+              </>
+            )}
+            {content && clientRef.current ? (
+              <ReaderPage
+                key={active.id}
+                client={clientRef.current}
+                page={page}
+                revision={revision}
+                content={content}
+                zoom={zoom}
+                tool={tool}
+                disabled={!!busy}
+                search={query}
+                onText={(run) => selectText(run)}
+                onImage={setSelectedImage}
+                onPoint={(point) => {
+                  if (tool === "add-text") selectText(undefined, point);
+                  else {
+                    setImagePoint(point);
+                    setImageFile(null);
+                    setImageWidth(35);
+                    setImageBackground(false);
+                  }
+                }}
+                onError={setError}
+                onZoom={setZoom}
+              />
+            ) : (
+              <div className="reader-loading">
+                <LoaderCircle className="spin" />
+                Carregando página…
+              </div>
+            )}
+          </div>
+          <footer className="reader-footer">
+            <div className="page-controls">
+              <button
+                className="icon-button"
+                aria-label="Página anterior"
+                disabled={page <= 1 || !!busy}
+                onClick={() => changePage(page - 1)}
+              >
+                <ChevronLeft size={20} />
+              </button>
+              <label>
+                <span className="page-label">Página</span>
+                <input
+                  aria-label="Número da página"
+                  inputMode="numeric"
+                  value={pageInput}
+                  onChange={(e) => setPageInput(e.target.value)}
+                  onBlur={() => {
+                    changePage(Number(pageInput));
+                    setPageInput(
+                      String(
+                        Math.min(
+                          info?.pageCount || 1,
+                          Math.max(1, Number(pageInput) || 1),
+                        ),
+                      ),
+                    );
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                />
+                <span>de {info?.pageCount}</span>
+              </label>
+              <button
+                className="icon-button"
+                aria-label="Próxima página"
+                disabled={page >= (info?.pageCount || 1) || !!busy}
+                onClick={() => changePage(page + 1)}
+              >
+                <ChevronRight size={20} />
+              </button>
+            </div>
+            <div className="zoom-controls">
+              <button
+                className="icon-button"
+                aria-label="Diminuir zoom"
+                disabled={zoom <= 0.5}
+                onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}
+              >
+                <ZoomOut size={18} />
+              </button>
+              <button
+                className="zoom-value"
+                aria-label="Ajustar à largura"
+                onClick={() => setZoom(1)}
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Aumentar zoom"
+                disabled={zoom >= 3}
+                onClick={() => setZoom((z) => Math.min(3, z + 0.25))}
+              >
+                <ZoomIn size={18} />
+              </button>
+              <button
+                className="icon-button fit-button"
+                aria-label="Ajustar página à tela"
+                onClick={() => setZoom(1)}
+              >
+                <Maximize size={17} />
+              </button>
+            </div>
+          </footer>
+        </>
+      )}
+      {busy && (
+        <div className="busy-indicator" role="status">
+          <LoaderCircle className="spin" size={16} />
+          {busy}
+        </div>
+      )}
+      {toast && (
+        <div className="toast" role="status">
+          <Check size={17} />
+          {toast}
+        </div>
+      )}
+      {textEditor && (
+        <Modal
+          error={error}
+          title={textEditor.run ? "Editar texto" : "Adicionar texto"}
+          onClose={() => setTextEditor(null)}
+          locked={!!busy}
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (textEditor.run)
+                void mutate({
+                  type: "replace-text",
+                  page,
+                  id: textEditor.run.id,
+                  original: textEditor.run.text,
+                  text,
+                  size: fontSize,
+                  color,
+                  fit,
+                });
+              else if (textEditor.point)
+                void mutate({
+                  type: "insert-text",
+                  page,
+                  point: [
+                    textEditor.point[0],
+                    Math.max(
+                      content!.bounds[1] + fontSize,
+                      textEditor.point[1],
+                    ),
+                  ],
+                  text,
+                  size: fontSize,
+                  color,
+                });
+            }}
+          >
+            <p className="dialog-description">
+              {textEditor.run
+                ? "Altere este trecho. O texto original será substituído na página."
+                : "Escreva uma linha para colocar na posição escolhida."}
+            </p>
+            <label className="field">
+              Texto do trecho
+              <input
+                autoFocus
+                aria-label="Texto do trecho"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                maxLength={2000}
+              />
+            </label>
+            <div className="form-row">
+              <label className="field">
+                Tamanho (pt)
+                <input
+                  type="number"
+                  min="4"
+                  max="144"
+                  step="0.1"
+                  value={fontSize}
+                  onChange={(e) => setFontSize(Number(e.target.value))}
+                  required
+                />
+              </label>
+              <label className="field color-field">
+                Cor
+                <input
+                  type="color"
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                />
+              </label>
+            </div>
+            {textEditor.run && (
+              <>
+                <label className="check-field">
+                  <input
+                    type="checkbox"
+                    checked={fit}
+                    onChange={(e) => setFit(e.target.checked)}
+                  />
+                  Ajustar o tamanho ao espaço original
+                </label>
+                <p className="field-note">
+                  Fonte: {textEditor.run.fontName}. Se faltar algum caractere,
+                  será usada uma fonte equivalente. Esta edição mantém uma linha
+                  por trecho.
+                </p>
+              </>
+            )}
+            <div className="dialog-actions">
+              {textEditor.run && (
+                <button
+                  className="button danger subtle"
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() =>
+                    void mutate({
+                      type: "replace-text",
+                      page,
+                      id: textEditor.run!.id,
+                      original: textEditor.run!.text,
+                      text: "",
+                      size: fontSize,
+                      color,
+                      fit: true,
+                    })
+                  }
+                >
+                  <Trash2 size={16} />
+                  Apagar texto
+                </button>
+              )}
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => setTextEditor(null)}
+                disabled={!!busy}
+              >
+                Cancelar
+              </button>
+              <button
+                className="button primary"
+                disabled={!!busy || !text.trim()}
+                type="submit"
+              >
+                Aplicar alteração
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {selectedImage && (
+        <Modal
+          error={error}
+          title="Imagem selecionada"
+          onClose={() => setSelectedImage(null)}
+          locked={!!busy}
+        >
+          <p className="dialog-description">
+            Remover esta imagem do conteúdo da página? Os textos e desenhos
+            vetoriais serão preservados. Você pode desfazer.
+          </p>
+          <div className="image-details">
+            <ImageIcon size={25} />
+            <span>
+              Imagem · {selectedImage.width} × {selectedImage.height} pixels
+            </span>
+          </div>
+          <div className="dialog-actions">
+            <button
+              className="button secondary"
+              onClick={() => setSelectedImage(null)}
+              disabled={!!busy}
+            >
+              Cancelar
+            </button>
+            <button
+              className="button danger"
+              disabled={!!busy}
+              onClick={() =>
+                void mutate({
+                  type: "delete-image",
+                  page,
+                  id: selectedImage.id,
+                })
+              }
+            >
+              <Trash2 size={16} />
+              Remover imagem
+            </button>
+          </div>
+        </Modal>
+      )}
+      {imagePoint && (
+        <Modal
+          error={error}
+          title="Inserir imagem"
+          onClose={() => {
+            setImagePoint(null);
+            setImageFile(null);
+          }}
+          locked={!!busy}
+        >
+          <p className="dialog-description">
+            Escolha uma imagem PNG ou JPEG do aparelho.
+          </p>
+          <button
+            className="image-picker"
+            onClick={() => imageInput.current?.click()}
+          >
+            {imageFile ? (
+              <>
+                <img src={imageFile.url} alt="Prévia da imagem" />
+                <span>{imageFile.name}</span>
+              </>
+            ) : (
+              <>
+                <ImagePlus size={30} />
+                <span>Escolher imagem</span>
+              </>
+            )}
+          </button>
+          {imageFile && (
+            <>
+              <label className="field">
+                Largura na página: {imageWidth}%
+                <input
+                  type="range"
+                  min="5"
+                  max="100"
+                  value={imageWidth}
+                  onChange={(e) => setImageWidth(Number(e.target.value))}
+                />
+              </label>
+              <label className="check-field">
+                <input
+                  type="checkbox"
+                  checked={imageBackground}
+                  onChange={(e) => setImageBackground(e.target.checked)}
+                />
+                Colocar atrás do conteúdo (fundo)
+              </label>
+              {imageBackground && (
+                <p className="field-note">
+                  Se a página tiver um fundo opaco, ele poderá encobrir a imagem
+                  inserida.
+                </p>
+              )}
+            </>
+          )}
+          <div className="dialog-actions">
+            <button
+              className="button secondary"
+              onClick={() => {
+                setImagePoint(null);
+                setImageFile(null);
+              }}
+              disabled={!!busy}
+            >
+              Cancelar
+            </button>
+            <button
+              className="button primary"
+              disabled={!!busy || !imageFile}
+              onClick={() => {
+                const rect = imageRect();
+                if (rect && imageFile)
+                  void mutate({
+                    type: "insert-image",
+                    page,
+                    rect,
+                    bytes: imageFile.bytes,
+                    background: imageBackground,
+                  });
+              }}
+            >
+              Inserir na página
+            </button>
+          </div>
+        </Modal>
+      )}
+      {deleting && (
+        <Modal
+          error={error}
+          title="Excluir da biblioteca?"
+          onClose={() => setDeleting(null)}
+          locked={!!busy}
+        >
+          <p className="dialog-description">
+            O documento “{deleting.title}” e suas edições serão removidos deste
+            aplicativo. O arquivo que você importou do aparelho não será
+            alterado.
+          </p>
+          <div className="dialog-actions">
+            <button
+              className="button secondary"
+              onClick={() => setDeleting(null)}
+              disabled={!!busy}
+            >
+              Cancelar
+            </button>
+            <button
+              className="button danger"
+              disabled={!!busy}
+              onClick={() =>
+                void runTask("Excluindo…", async () => {
+                  await store.deleteStoredDocument(deleting.id);
+                  setDeleting(null);
+                  await refreshLibrary();
+                })
+              }
+            >
+              Excluir documento
+            </button>
+          </div>
+        </Modal>
+      )}
+      {restore && (
+        <Modal
+          error={error}
+          title="Restaurar PDF original?"
+          onClose={() => setRestore(false)}
+          locked={!!busy}
+        >
+          <p className="dialog-description">
+            A cópia de trabalho voltará ao arquivo importado. Salve uma cópia
+            antes se quiser guardar suas alterações atuais. O histórico desta
+            sessão será reiniciado.
+          </p>
+          <div className="dialog-actions">
+            <button
+              className="button secondary"
+              onClick={() => setRestore(false)}
+              disabled={!!busy}
+            >
+              Cancelar
+            </button>
+            <button
+              className="button danger"
+              disabled={!!busy}
+              onClick={() =>
+                void runTask("Restaurando…", async () => {
+                  const doc = activeRef.current!;
+                  const bytes = await store.readDocumentBytes(doc.id);
+                  if (!bytes) throw new Error("Original não encontrado.");
+                  setRestore(false);
+                  if (
+                    await openBytes(
+                      bytes,
+                      doc.title,
+                      { ...doc, pageMetadata: {}, hasWorkingCopy: false },
+                      undefined,
+                      true,
+                    )
+                  )
+                    notice("PDF original restaurado");
+                })
+              }
+            >
+              Restaurar original
+            </button>
+          </div>
+        </Modal>
+      )}
+      {passwordJob && (
+        <Modal
+          error={error}
+          title="PDF protegido por senha"
+          onClose={() => {
+            setPasswordJob(null);
+            setPassword("");
+          }}
+          locked={!!busy}
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void runTask("Desbloqueando…", async () => {
+                await openBytes(
+                  passwordJob.bytes,
+                  passwordJob.name,
+                  passwordJob.doc,
+                  password,
+                  passwordJob.working,
+                );
+              });
+            }}
+          >
+            <p className="dialog-description">
+              Digite a senha para abrir este arquivo. A cópia de trabalho e o
+              PDF exportado ficarão sem senha; o original será preservado.
+            </p>
+            <label className="field">
+              Senha
+              <input
+                autoFocus
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </label>
+            <div className="dialog-actions">
+              <button
+                type="submit"
+                className="button primary"
+                disabled={!!busy}
+              >
+                Abrir documento
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {legacy && (
+        <Modal
+          error={error}
+          title="Edições da versão anterior"
+          onClose={() => setLegacy(null)}
+          locked={!!busy}
+        >
+          <p className="dialog-description">
+            Este arquivo tem anotações ou correções visuais feitas na versão
+            anterior. Você pode incorporá-las à cópia de trabalho ou começar
+            pelo PDF original.
+          </p>
+          <p className="field-note">
+            As coberturas antigas continuam sendo coberturas. Novas alterações
+            de texto usarão edição real.
+          </p>
+          <div className="dialog-actions">
+            <button
+              className="button secondary"
+              disabled={!!busy}
+              onClick={() =>
+                void runTask("Abrindo original…", async () => {
+                  const doc = {
+                    ...legacy.doc,
+                    archivedPageMetadata: legacy.doc.pageMetadata,
+                    pageMetadata: {},
+                  };
+                  await openBytes(legacy.bytes, doc.title, doc);
+                  setLegacy(null);
+                })
+              }
+            >
+              Usar original
+            </button>
+            <button
+              className="button primary"
+              disabled={!!busy}
+              onClick={() =>
+                void runTask("Incorporando edições…", async () => {
+                  const { exportEditedPdf } = await import("./utils/pdfExport");
+                  const bytes = await exportEditedPdf(
+                    legacy.bytes,
+                    legacy.doc.pageMetadata,
+                    legacy.doc.title,
+                  );
+                  const doc = {
+                    ...legacy.doc,
+                    archivedPageMetadata: legacy.doc.pageMetadata,
+                    pageMetadata: {},
+                    hasWorkingCopy: true,
+                  };
+                  await openBytes(bytes, doc.title, doc, undefined, true);
+                  setLegacy(null);
+                })
+              }
+            >
+              Incorporar edições
+            </button>
+          </div>
+        </Modal>
+      )}
+      {about && (
+        <Modal
+          error={error}
+          title="Sobre o EditPDF"
+          onClose={() => setAbout(false)}
+        >
+          <p className="dialog-description">
+            Leitura e edição pessoal de PDFs, com processamento no seu aparelho.
+            Nenhuma inteligência artificial ou envio de documentos a servidores.
+          </p>
+          <div className="about-detail">
+            <strong>Motor de edição</strong>
+            <span>MuPDF.js 1.28.1 · Artifex Software, Inc.</span>
+            <a href="licenses/AGPL-3.0.txt" target="_blank" rel="noreferrer">
+              Licença GNU AGPL versão 3
+            </a>
+            <a
+              href="https://github.com/Chimiasama/Editor-pdf"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Código-fonte e instruções de compilação
+            </a>
+          </div>
+          <p className="field-note">
+            Esta versão edita trechos de uma linha e imagens separadas.
+            Digitalizações precisam de OCR. O editor de documento, disponível em
+            Mais opções, permite escrever com parágrafos e exportar um novo PDF
+            com outro layout.
+          </p>
+          <p className="field-note">
+            Faça backup usando Salvar cópia. Limpar os dados do navegador ou do
+            aplicativo remove a biblioteca local.
+          </p>
+          <div className="dialog-actions">
+            <button className="button primary" onClick={() => setAbout(false)}>
+              Entendi
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );
