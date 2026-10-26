@@ -4,7 +4,6 @@ export interface TocItem {
   pageNumber: number;
   category?: string;
   description?: string;
-  isGeneratedByAI?: boolean;
 }
 
 export type AnnotationType = 'text' | 'image' | 'whiteout' | 'shape' | 'highlight' | 'draw';
@@ -64,17 +63,4 @@ export interface PdfDocumentRecord {
   pdfDataUri?: string; // base64 or object url
   tableOfContents: TocItem[];
   pageMetadata: Record<number, PageMetadata>;
-}
-
-export interface AiTextCorrection {
-  original: string;
-  correction: string;
-  reason: string;
-}
-
-export interface AiVisualRemoval {
-  targetElement: string;
-  action: string;
-  suggestedAlternative: string;
-  suggestedPage?: number;
 }

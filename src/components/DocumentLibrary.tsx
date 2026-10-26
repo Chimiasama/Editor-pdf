@@ -89,7 +89,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
               <div className="flex items-center space-x-2">
                 <h1 className="font-bold text-lg text-white tracking-tight">PDF Studio Master</h1>
                 <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">
-                  IA Gemini 3.8
+                  Editor PDF
                 </span>
               </div>
               <p className="text-xs text-slate-400">Leitor & Editor Completo com Diagramação Preservada</p>
@@ -134,8 +134,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
             </h2>
             <p className="text-sm text-slate-300 leading-relaxed mb-4">
               Remova imagens indesejadas (como aranhas ou marcas d'água), substitua por novas ilustrações,
-              reescreva textos preservando o enquadramento, e use a <strong>IA Gemini</strong> para ler o índice e
-              gerar links diretos de navegação entre capítulos!
+              adicione textos preservando o enquadramento e navegue pelos capítulos cadastrados no documento.
             </p>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
@@ -145,7 +144,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
               </div>
               <div className="flex items-center space-x-2 text-slate-300 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
                 <CheckCircle2 className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-                <span>Índice Inteligente por IA</span>
+                <span>Índice de Capítulos</span>
               </div>
               <div className="flex items-center space-x-2 text-slate-300 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
                 <CheckCircle2 className="w-4 h-4 text-violet-400 flex-shrink-0" />
@@ -243,7 +242,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
             <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-3" />
             <h3 className="text-base font-semibold text-slate-300">Nenhum documento encontrado</h3>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              Clique em "Carregar Livro de RPG Exemplo" para testar a remoção de imagem (aranha) e o índice por IA
+              Clique em "Carregar Livro de RPG Exemplo" para testar a remoção de imagem (aranha) e a navegação por capítulos
               ou faça o upload de um PDF do seu dispositivo.
             </p>
             <button
@@ -284,7 +283,7 @@ export const DocumentLibrary: React.FC<DocumentLibraryProps> = ({
                         )}
                         {doc.tableOfContents && doc.tableOfContents.length > 0 && (
                           <span className="px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[11px] font-medium">
-                            Índice IA
+                            Índice
                           </span>
                         )}
                       </div>

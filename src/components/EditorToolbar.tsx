@@ -36,8 +36,8 @@ interface EditorToolbarProps {
   onZoomChange: (newZoom: number) => void;
   onRotatePage: () => void;
   onOpenCropModal: () => void;
-  onToggleAiPanel: () => void;
-  isAiPanelOpen: boolean;
+  onToggleDocumentPanel: () => void;
+  isDocumentPanelOpen: boolean;
   onToggleThumbnailDrawer: () => void;
   isThumbnailDrawerOpen: boolean;
   readingTheme: 'light' | 'dark' | 'sepia';
@@ -62,8 +62,8 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   onZoomChange,
   onRotatePage,
   onOpenCropModal,
-  onToggleAiPanel,
-  isAiPanelOpen,
+  onToggleDocumentPanel,
+  isDocumentPanelOpen,
   onToggleThumbnailDrawer,
   isThumbnailDrawerOpen,
   readingTheme,
@@ -136,7 +136,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
           </button>
         </div>
 
-        {/* Right: AI Panel, Theme & Export */}
+        {/* Right: Document Panel, Theme & Export */}
         <div className="flex items-center space-x-2">
           {/* Reading theme toggle */}
           <button
@@ -153,18 +153,18 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
             )}
           </button>
 
-          {/* AI Gemini Button */}
+          {/* Document Navigation Button */}
           <button
-            onClick={onToggleAiPanel}
+            onClick={onToggleDocumentPanel}
             className={`relative flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition border ${
-              isAiPanelOpen
+              isDocumentPanelOpen
                 ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white border-indigo-400/50 shadow-md shadow-indigo-500/20'
                 : 'bg-indigo-950/40 text-indigo-300 border-indigo-500/30 hover:bg-indigo-900/40'
             }`}
-            title="Abrir Assistente de IA Gemini (Índice inteligente, correção e remoção)"
+            title="Abrir índice e ferramentas do documento"
           >
             <Sparkles className="w-4 h-4 text-amber-300" />
-            <span className="hidden sm:inline">IA Gemini</span>
+            <span className="hidden sm:inline">Documento</span>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           </button>
 

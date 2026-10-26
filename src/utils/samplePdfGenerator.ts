@@ -306,7 +306,7 @@ export async function createSampleRpgPdf(): Promise<{ bytes: Uint8Array; dataUri
     { x: 60, y: 215, size: 10, font: fontRegular, color: textColor }
   );
   page1.drawText(
-    '1. Use a IA Gemini para ler o Índice acima e criar Links de Navegação interativos.',
+    '1. Use o painel Documento para navegar pelos capítulos do livro.',
     { x: 75, y: 195, size: 9.5, font: fontRegular, color: textColor }
   );
   page1.drawText(
