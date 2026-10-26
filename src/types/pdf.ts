@@ -4,8 +4,9 @@ export interface TocItem {
   pageNumber: number;
   category?: string;
   description?: string;
-  isGeneratedByAI?: boolean;
 }
+
+export type EditorTool = AnnotationType | 'select' | 'pan' | 'edit-text';
 
 export type AnnotationType = 'text' | 'image' | 'whiteout' | 'shape' | 'highlight' | 'draw';
 
@@ -17,6 +18,9 @@ export interface PageAnnotation {
   y: number;
   width: number;
   height: number;
+  viewRotation?: number;
+  sourceTextId?: string;
+  sourceRegion?: { x: number; y: number; width: number; height: number };
   // Text specifics
   text?: string;
   fontSize?: number;
@@ -61,20 +65,8 @@ export interface PdfDocumentRecord {
   category?: string;
   lastOpenedAt: number;
   createdAt: number;
+  documentContent?: import('@tiptap/react').JSONContent;
   pdfDataUri?: string; // base64 or object url
   tableOfContents: TocItem[];
   pageMetadata: Record<number, PageMetadata>;
-}
-
-export interface AiTextCorrection {
-  original: string;
-  correction: string;
-  reason: string;
-}
-
-export interface AiVisualRemoval {
-  targetElement: string;
-  action: string;
-  suggestedAlternative: string;
-  suggestedPage?: number;
 }
