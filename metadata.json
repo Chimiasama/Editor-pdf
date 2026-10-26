@@ -1,0 +1,6 @@
+{
+  "name": "PDF Studio Master & AI Editor",
+  "description": "Leitor e editor avançado de PDFs com diagramação perfeita, remoção e substituição de imagens, edição de textos, enquadramento e IA Gemini para índice inteligente e sugestões.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
