@@ -1,35 +1,30 @@
-# Comparação com o pedido original (sem IA)
+# Estado do EditPDF — ferramentas gratuitas e permissivas
 
-O app é um protótipo de leitor com anotações e exportação. Ainda não atende à proposta de editor completo de PDFs.
+O usuário escolheu manter dependências gratuitas/permissivas e aceitar limites na edição do PDF original. Não foi adotado motor AGPL ou SDK comercial.
 
-| Pedido | Estado no código | Limitação |
+## Dois modos de edição
+
+- **PDF:** mantém páginas originais e adiciona anotações. “Corrigir texto” permite selecionar trechos extraídos, alterar texto, fonte/tamanho/cor/alinhamento e aplicar correção visual. A região original é coberta de branco; o conteúdo original continua no PDF. Não é remoção segura, nem substituição estrutural do texto.
+- **Documento:** importa o texto selecionável para um editor de parágrafos (Tiptap), com digitação livre, negrito, itálico, sublinhado, títulos, listas, alinhamento e inserção/exclusão/dimensionamento de imagens novas. Exporta um PDF novo em A4 com quebra automática de linhas/páginas (pdfmake). O usuário aceita a conversão antes de iniciá-la; imagens originais, tabelas, layout e anotações do modo PDF não são importados. O original e o rascunho ficam separados.
+
+## Funções e limites
+
+| Pedido | Implementação atual | Limite |
 | --- | --- | --- |
-| Ler PDFs | Implementado com PDF.js | Validar PDFs grandes, protegidos e digitalizados no Android |
-| Pinçar para zoom e diminuir | Hook de pinça, duplo toque e botões | Usabilidade física e conflitos com gestos ainda precisam de teste |
-| Lista de PDFs do celular | Importação pelo seletor e biblioteca interna | Não lista automaticamente todos os PDFs do armazenamento |
-| Favoritos | Metadados em localStorage e filtro | Arquivos importados não persistem; somente metadados |
-| Editar escrita | Inserção/edição de caixas de texto adicionais | Não seleciona nem substitui texto original; fonte Helvetica e linhas simples, sem recomposição tipográfica |
-| Remover imagens | Cobertura com retângulo opaco | Imagem/conteúdo original continua dentro do PDF; não serve para apagar dados sensíveis |
-| Inserir/substituir imagem | Sobreposição de imagens enviadas pelo usuário | Não extrai nem substitui o objeto original; cobertura não recompõe o fundo |
-| Diagramação/enquadramento | Recorte, rotação, posicionamento de anotações | Sem edição estrutural de parágrafos, fluxo de texto ou garantia de ausência de sobreposição |
-| Não perder diagramação | Páginas originais são mantidas sob as anotações | Isso preserva a base, mas não garante edição perfeita ou correção de texto existente |
-| Índice com navegação | Capítulos previamente cadastrados, sobretudo no exemplo | Não importa os bookmarks originais nem detecta sumário de arquivos novos |
-| Simplicidade no celular | Interface responsiva e gestos previstos | Painéis laterais e desenho/seleção de anotações precisam de revisão em telas pequenas |
-| Edição completa | Parcial | Sem OCR, assinatura, mesclar/dividir/reordenar páginas, formulários ou edição de objetos originais |
+| Salvar arquivos e edições | IndexedDB guarda bytes, metadados, favoritos, anotações e rascunho Documento | Dados locais podem ser apagados ao desinstalar/limpar dados; exportar backups |
+| Biblioteca do celular | Seletor de arquivos, busca e favoritos | Não varre automaticamente todo o armazenamento |
+| Leitura móvel | Página ajustada à largura, pinça, duplo toque e navegação | Testada em navegador móvel emulado; validar WebView e aparelho físico |
+| Corrigir texto existente | Seleção de trechos com texto inicial preenchido e editor de bloco | Correção por sobreposição branca, não edição real dos operadores PDF; texto inclinado/rotacionado e OCR não suportados |
+| Escrever como documento | Editor de parágrafos com fluxo e paginação na exportação | Conversão sem layout original; ordem textual de PDFs em colunas pode precisar de correção manual |
+| Imagens | Inserir PNG/JPEG, selecionar/mover/redimensionar/trocar/excluir imagens adicionadas; tamanho/exclusão no Documento | Objetos de imagem originais não são selecionáveis ou removidos do PDF |
+| Cobrir regiões | Retângulo opaco com nome e aviso claros | Não apaga dados sensíveis, objetos originais ou texto copiável |
+| Histórico | Desfazer/refazer a primeira edição, separado por documento; gesto de movimento salva uma ação | Histórico transitório; edições finais persistem, mas pilha não sobrevive à reinicialização |
+| Navegação | Importa bookmarks do PDF e usa miniaturas reais carregadas sob demanda | Não detecta sumário por OCR nem cria links internos novos automaticamente |
+| Recorte/rotação | Exporta alterações de página; coordenadas de anotações levam rotação em conta | Edição sobre páginas com recorte complexo deve ser conferida após exportar |
+| Texto exportado | Quebra linhas, incorpora Roboto, suporta acentos e rejeita caixas pequenas em vez de cortar silenciosamente | Fontes originais não são recriadas; nem todos os alfabetos/símbolos estão cobertos |
 
-## Problemas adicionais encontrados na revisão
+## Validação
 
-- `pdfBytesCache` fica somente em memória. Ao tentar reabrir documento sem bytes, o app cria outro livro de exemplo em vez de recuperar o arquivo.
-- Histórico de desfazer/refazer não começa com o estado original e não é separado por documento; deve ser revisto.
-- Atalhos de aranha/brasão são específicos do exemplo, mas aparecem na página 5 de qualquer documento. Eles mudam a página e adicionam anotações usando o estado anterior; a substituição também faz duas atualizações consecutivas que podem sobrescrever a máscara.
-- Ferramentas de desenho e exportação não têm cobertura funcional completa. O tipo `draw` existe, mas a exportação não implementa traços livres.
-- As mensagens de “remoção” e “diagramação perfeita” são mais fortes que o comportamento real de sobreposição.
+Testes unitários cobrem armazenamento, histórico, geometria rotacionada, quebra de linhas, overflow e paginação do Documento. Testes Playwright em viewport 390×844 cobrem importação, correção, persistência após reload, exportação com extração do texto resultante, desfazer/refazer e gestos de toque. A CI executa essas verificações antes de compilar o APK debug.
 
-## Prioridade sugerida
-
-1. Persistir os bytes com IndexedDB ou armazenamento nativo e recuperar documentos corretamente.
-2. Corrigir histórico, gestos de edição e ações do exemplo; validar importação/exportação em aparelhos reais.
-3. Distinguir cobertura visual de remoção real e inserção de texto de edição do texto original.
-4. Acrescentar edição estrutural/remoção de objetos, gerenciamento de páginas e importação de bookmarks, conforme prioridade do produto.
-
-Esta análise é uma revisão do código, não uma certificação de funcionamento no celular. A IA foi excluída da avaliação e do aplicativo.
+Ainda não é um editor equivalente ao Word para qualquer PDF. Edição fiel de objetos originais, remoção segura, OCR, recomposição de tabelas/colunas e preservação exata de fontes/layout exigem trabalho adicional e/ou outro motor. O modo Documento fornece edição fluida com uma conversão explícita e perda de layout conhecida.

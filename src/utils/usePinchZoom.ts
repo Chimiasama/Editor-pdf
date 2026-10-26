@@ -14,7 +14,7 @@ export function usePinchZoom(
 ) {
   const initialDistanceRef = useRef<number | null>(null);
   const initialZoomRef = useRef<number>(currentZoom);
-  const lastTapRef = useRef<number>(0);
+  const lastTapRef = useRef({ time: 0, x: 0, y: 0 });
 
   useEffect(() => {
     const el = elementRef.current;
@@ -31,15 +31,18 @@ export function usePinchZoom(
         e.preventDefault();
         initialDistanceRef.current = getDistance(e.touches[0], e.touches[1]);
         initialZoomRef.current = currentZoom;
+        lastTapRef.current.time = 0;
       } else if (e.touches.length === 1) {
-        // Double tap detection
+        if ((e.target as Element).closest('button, input, textarea, [contenteditable], [data-annotation]')) return;
+        // A double tap must be on the same reading area, never on editing controls.
         const now = Date.now();
-        if (now - lastTapRef.current < 300) {
+        const touch = e.touches[0];
+        if (now - lastTapRef.current.time < 300 && Math.hypot(touch.clientX - lastTapRef.current.x, touch.clientY - lastTapRef.current.y) < 24) {
           // Double tap detected
           const targetZoom = currentZoom > 1.2 ? 1.0 : 1.5;
           onZoomChange(targetZoom);
         }
-        lastTapRef.current = now;
+        lastTapRef.current = { time: now, x: touch.clientX, y: touch.clientY };
       }
     }
 

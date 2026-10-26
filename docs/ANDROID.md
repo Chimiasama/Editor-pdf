@@ -4,7 +4,7 @@ A action **Validar e gerar APK** executa TypeScript, testes de exportação PDF 
 
 Na execução concluída, abra **Artifacts → EditPDF-debug-apk**, baixe e extraia o ZIP. Transfira `app-debug.apk` para o celular Android, permita a instalação por essa origem e instale. É um APK debug para testes, sem assinatura de distribuição ou publicação na Play Store. Cada runner pode gerar uma chave debug diferente: se uma atualização falhar por assinatura incompatível, desinstale a versão anterior (isso apaga seus dados locais).
 
-O APK carrega o build local, sem servidor Express e sem Gemini. Worker PDF.js, mapas de caracteres, fontes PDF e WASM são empacotados com a versão instalada. Fontes da interface ainda podem usar Google Fonts; haverá fallback sem rede. Importação abre o seletor de arquivos; exportação usa o compartilhamento Android para salvar/enviar o PDF.
+O APK carrega o build local, sem servidor Express e sem Gemini. Worker PDF.js, mapas de caracteres, fontes PDF, fontes do editor e WASM são empacotados com a versão instalada. A interface usa fontes locais do sistema; as exportações incorporam Roboto. Importação abre o seletor de arquivos; exportação usa o compartilhamento Android para salvar/enviar o PDF.
 
 ## Desenvolvimento
 
@@ -14,6 +14,8 @@ Com Node 24.19.0 e Bun 1.4.4:
 bun install --frozen-lockfile
 npm run lint
 npm test
+npx playwright install --with-deps chromium
+npm run test:e2e
 npm run build
 npm run android:prepare
 ```
@@ -26,6 +28,8 @@ O diretório `android/` é gerado e ignorado. Para compilar localmente, instale 
 - Voltar à biblioteca, marcar favorito e filtrar documentos.
 - Adicionar texto e imagem, cobrir uma região, recortar e girar a página.
 - Exportar pelo compartilhamento, salvar e abrir em outro leitor para verificar as edições.
-- Fechar e reabrir: atualmente apenas a lista/metadados persistem; os bytes do PDF ficam em memória. Reabrir um PDF importado após reiniciar é uma limitação conhecida.
+- Fechar e reabrir: conferir que o PDF, favoritos e anotações voltam sem precisar importar novamente.
+- Abrir Modo Documento, aceitar a conversão textual, alterar parágrafos, inserir imagem e exportar um PDF novo. Conferir o rascunho após reiniciar.
+- Em Corrigir texto, tocar em um trecho e aplicar uma correção. A cobertura é visual; o texto original continua copiável no PDF.
 
 A CI não executa emulador nem testes físicos de Android; APK compilado não prova que todos esses fluxos funcionam no aparelho.

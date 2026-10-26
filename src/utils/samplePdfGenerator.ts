@@ -293,7 +293,7 @@ export async function createSampleRpgPdf(): Promise<{ bytes: Uint8Array; dataUri
     borderWidth: 1.5,
   });
 
-  page1.drawText('DICA DO EDITOR IA & ESTÚDIO:', {
+  page1.drawText('DICA DO EDITOR:', {
     x: 60,
     y: 235,
     size: 12,
@@ -314,11 +314,11 @@ export async function createSampleRpgPdf(): Promise<{ bytes: Uint8Array; dataUri
     { x: 75, y: 175, size: 9.5, font: fontRegular, color: textColor }
   );
   page1.drawText(
-    '3. Vá até a Página 5 e use a ferramenta "Remover Imagem" para remover a Aranha indesejada!',
+    '3. Use Cobrir para ocultar uma região visualmente; o conteúdo original permanece.',
     { x: 75, y: 155, size: 9.5, font: fontBold, color: primaryColor }
   );
   page1.drawText(
-    '4. Substitua a arte da aranha pelo Brasão do Lobo ou gere uma nova ilustração com IA.',
+    '4. Adicione suas imagens ou converta o texto no Modo Documento.',
     { x: 75, y: 135, size: 9.5, font: fontRegular, color: textColor }
   );
   page1.drawText(
@@ -722,7 +722,7 @@ export async function createSampleRpgPdf(): Promise<{ bytes: Uint8Array; dataUri
     color: rgb(0.5, 0.4, 0.1),
   });
   page5.drawText(
-    'Se você não deseja ver a imagem da aranha, utilize o botão "Remover Imagem / Ocultar" na barra superior.',
+    'Para ocultar uma região visualmente, selecione Cobrir. Isso não apaga o conteúdo do PDF.',
     { x: 55, y: 115, size: 9, font: fontRegular, color: textColor }
   );
   page5.drawText(

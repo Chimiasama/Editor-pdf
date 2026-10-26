@@ -1,6 +1,6 @@
 {
   "name": "PDF Studio Master",
-  "description": "Leitor e editor avançado de PDFs com diagramação perfeita, remoção e substituição de imagens, edição de textos, enquadramento e navegação por capítulos.",
+  "description": "Leia e anote PDFs ou converta texto para um documento editável. Salve seus arquivos e exporte cópias editadas.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

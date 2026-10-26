@@ -1,194 +1,76 @@
-import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
-import { PageMetadata } from '../types/pdf';
-
-/**
- * Helper to convert hex color (#ffffff or #4f46e5) to pdf-lib rgb(r, g, b)
- */
-function hexToRgb(hex?: string) {
-  if (!hex || !hex.startsWith('#')) return rgb(0.1, 0.1, 0.1);
-  const cleanHex = hex.replace('#', '');
-  let r = 0, g = 0, b = 0;
-  if (cleanHex.length === 3) {
-    r = parseInt(cleanHex[0] + cleanHex[0], 16) / 255;
-    g = parseInt(cleanHex[1] + cleanHex[1], 16) / 255;
-    b = parseInt(cleanHex[2] + cleanHex[2], 16) / 255;
-  } else if (cleanHex.length >= 6) {
-    r = parseInt(cleanHex.substring(0, 2), 16) / 255;
-    g = parseInt(cleanHex.substring(2, 4), 16) / 255;
-    b = parseInt(cleanHex.substring(4, 6), 16) / 255;
-  }
-  return rgb(r, g, b);
+import { PDFDocument, rgb, degrees, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from 'pdf-lib';
+import type { PageMetadata } from '../types/pdf';
+import { normalizeRotation } from './pageGeometry';
+import { wrapText } from './textLayout';
+function color(hex = '#172033') {
+  const s = hex.replace('#', '');
+  if (!/^[0-9a-f]{6}$/i.test(s)) throw new Error('Cor inválida. Escolha uma cor no editor.');
+  return rgb(parseInt(s.slice(0, 2), 16) / 255, parseInt(s.slice(2, 4), 16) / 255, parseInt(s.slice(4, 6), 16) / 255);
 }
-
-/**
- * Export and burn in all edits (Text modifications, Whiteouts/Element removals,
- * Image insertions/replacements, Shapes, Rotations) into a real PDF using pdf-lib!
- */
-export async function exportEditedPdf(
-  originalPdfBytes: Uint8Array,
-  pageMetadataMap: Record<number, PageMetadata>,
-  documentTitle: string = 'documento_editado.pdf'
-): Promise<Uint8Array> {
-  const pdfDoc = await PDFDocument.load(originalPdfBytes);
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-
-  const pages = pdfDoc.getPages();
-
-  for (let i = 0; i < pages.length; i++) {
-    const pageNum = i + 1;
-    const page = pages[i];
-    const meta = pageMetadataMap[pageNum];
-    const { width, height } = page.getSize();
-
+export async function exportEditedPdf(originalPdfBytes: Uint8Array, metadata: Record<number, PageMetadata>, documentTitle = 'documento.pdf'): Promise<Uint8Array> {
+  const pdf = await PDFDocument.load(originalPdfBytes);
+  pdf.setTitle(documentTitle);
+  let regular, bold, italic, boldItalic;
+  if (Object.values(metadata).some(m => m.annotations.some(a => a.type === 'text'))) {
+    const [{ default: fontkit }, { default: fonts }] = await Promise.all([import('@pdf-lib/fontkit'), import('pdfmake/build/vfs_fonts')]);
+    pdf.registerFontkit(fontkit);
+    [regular, bold, italic, boldItalic] = await Promise.all(['Roboto-Regular.ttf', 'Roboto-Medium.ttf', 'Roboto-Italic.ttf', 'Roboto-MediumItalic.ttf'].map(name => pdf.embedFont(Uint8Array.from(atob(fonts[name]), c => c.charCodeAt(0)), { subset: true })));
+  } else {
+    regular = await pdf.embedFont(StandardFonts.Helvetica); bold = italic = boldItalic = regular;
+  }
+  for (const [index, page] of pdf.getPages().entries()) {
+    const meta = metadata[index + 1];
     if (!meta) continue;
-
-    // 1. Rotation adjustments
-    if (meta.rotation && meta.rotation !== 0) {
-      const currentRot = page.getRotation().angle;
-      page.setRotation(degrees((currentRot + meta.rotation) % 360));
-    }
-
-    // 2. Crop adjustments if defined
+    const crop = page.getCropBox();
+    const W = crop.width, H = crop.height;
+    const finalRotation = normalizeRotation(page.getRotation().angle + (meta.rotation || 0));
+    page.setRotation(degrees(finalRotation));
     if (meta.cropBox) {
-      const crop = meta.cropBox;
-      const cropX = (crop.left / 100) * width;
-      const cropY = (crop.bottom / 100) * height;
-      const cropW = width - cropX - (crop.right / 100) * width;
-      const cropH = height - cropY - (crop.top / 100) * height;
-      if (cropW > 50 && cropH > 50) {
-        page.setCropBox(cropX, cropY, cropW, cropH);
-      }
+      const c = meta.cropBox;
+      const width = W * (1 - (c.left + c.right) / 100), height = H * (1 - (c.top + c.bottom) / 100);
+      if (width <= 50 || height <= 50) throw new Error('O recorte deixa a página pequena demais. Ajuste as margens.');
+      page.setCropBox(crop.x + W * c.left / 100, crop.y + H * c.bottom / 100, width, height);
     }
-
-    // 3. Annotations & Edits
-    if (meta.annotations && meta.annotations.length > 0) {
-      for (const ann of meta.annotations) {
-        // Convert percentages (0 to 100) to PDF coordinates
-        // Note: In PDF coordinate system, (0, 0) is BOTTOM-LEFT.
-        // In web overlay, (0, 0) is TOP-LEFT.
-        const annWidth = (ann.width / 100) * width;
-        const annHeight = (ann.height / 100) * height;
-        const annX = (ann.x / 100) * width;
-        const annY = height - (ann.y / 100) * height - annHeight;
-
-        if (ann.type === 'whiteout') {
-          // REMOVE IMAGE / ELEMENT:
-          // Draws a clean solid background box matching color (defaults to pure white)
-          // Preserving diagramation and eliminating unwanted graphics like the spider!
-          const fillColor = hexToRgb(ann.bgColor || '#ffffff');
-          page.drawRectangle({
-            x: annX,
-            y: annY,
-            width: annWidth,
-            height: annHeight,
-            color: fillColor,
-          });
-        } else if (ann.type === 'image' && ann.imageUrl) {
-          try {
-            // Embed image (png or jpg)
-            const isPng = ann.imageUrl.includes('image/png');
-            const base64Data = ann.imageUrl.split(',')[1] || ann.imageUrl;
-            const imgBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
-
-            const embeddedImg = isPng
-              ? await pdfDoc.embedPng(imgBytes)
-              : await pdfDoc.embedJpg(imgBytes);
-
-            page.drawImage(embeddedImg, {
-              x: annX,
-              y: annY,
-              width: annWidth,
-              height: annHeight,
-              opacity: ann.opacity !== undefined ? ann.opacity : 1.0,
-            });
-          } catch (imgErr) {
-            console.warn('Could not embed annotation image:', imgErr);
-          }
-        } else if (ann.type === 'text' && ann.text) {
-          // Add or edit text box
-          if (ann.bgColor) {
-            page.drawRectangle({
-              x: annX,
-              y: annY,
-              width: annWidth,
-              height: annHeight,
-              color: hexToRgb(ann.bgColor),
-            });
-          }
-
-          const font =
-            ann.fontWeight === 'bold'
-              ? fontBold
-              : ann.fontStyle === 'italic'
-              ? fontItalic
-              : fontRegular;
-
-          const fontSize = ann.fontSize || 12;
-          const textColor = hexToRgb(ann.color || '#0f172a');
-
-          // Split text into lines to avoid overflow
-          const lines = ann.text.split('\n');
-          let textLineY = annY + annHeight - fontSize - 2;
-
-          for (const line of lines) {
-            if (textLineY >= annY) {
-              page.drawText(line, {
-                x: annX + 4,
-                y: textLineY,
-                size: fontSize,
-                font: font,
-                color: textColor,
-              });
-              textLineY -= fontSize * 1.25;
-            }
-          }
-        } else if (ann.type === 'highlight') {
-          // Transparent highlight box
-          page.drawRectangle({
-            x: annX,
-            y: annY,
-            width: annWidth,
-            height: annHeight,
-            color: hexToRgb(ann.bgColor || '#fef08a'),
-            opacity: 0.45,
-          });
-        } else if (ann.type === 'shape') {
-          const stroke = hexToRgb(ann.strokeColor || '#4f46e5');
-          const fill = ann.fillColor ? hexToRgb(ann.fillColor) : undefined;
-          const strokeWidth = ann.strokeWidth || 2;
-
-          if (ann.shapeType === 'circle') {
-            const rx = annWidth / 2;
-            const ry = annHeight / 2;
-            page.drawEllipse({
-              x: annX + rx,
-              y: annY + ry,
-              xScale: rx,
-              yScale: ry,
-              borderColor: stroke,
-              borderWidth: strokeWidth,
-              color: fill,
-            });
-          } else {
-            // Default rectangle
-            page.drawRectangle({
-              x: annX,
-              y: annY,
-              width: annWidth,
-              height: annHeight,
-              borderColor: stroke,
-              borderWidth: strokeWidth,
-              color: fill,
-            });
-          }
+    for (const ann of meta.annotations) {
+      const rotation = normalizeRotation(ann.viewRotation ?? 0);
+      const width = rotation % 180 ? H : W, height = rotation % 180 ? W : H;
+      const matrices: Record<number, [number, number, number, number, number, number]> = {
+        0: [1, 0, 0, 1, crop.x, crop.y], 90: [0, 1, -1, 0, crop.x + W, crop.y],
+        180: [-1, 0, 0, -1, crop.x + W, crop.y + H], 270: [0, -1, 1, 0, crop.x, crop.y + H],
+      };
+      page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...matrices[rotation]));
+      const x = ann.x * width / 100, y = height * (1 - (ann.y + ann.height) / 100);
+      const w = ann.width * width / 100, h = ann.height * height / 100;
+      if (ann.sourceRegion) {
+        const r = ann.sourceRegion;
+        page.drawRectangle({ x: r.x * width / 100, y: height * (1 - (r.y + r.height) / 100), width: r.width * width / 100, height: r.height * height / 100, color: color('#ffffff') });
+      }
+      if (ann.type === 'whiteout') page.drawRectangle({ x, y, width: w, height: h, color: color(ann.bgColor || '#ffffff') });
+      else if (ann.type === 'highlight') page.drawRectangle({ x, y, width: w, height: h, color: color(ann.bgColor || '#fde047'), opacity: .45 });
+      else if (ann.type === 'shape') {
+        const options = { borderColor: color(ann.strokeColor || '#4f46e5'), borderWidth: ann.strokeWidth || 2, color: ann.fillColor ? color(ann.fillColor) : undefined };
+        if (ann.shapeType === 'circle') page.drawEllipse({ x: x + w / 2, y: y + h / 2, xScale: w / 2, yScale: h / 2, ...options });
+        else page.drawRectangle({ x, y, width: w, height: h, ...options });
+      } else if (ann.type === 'image' && ann.imageUrl) {
+        const bytes = Uint8Array.from(atob(ann.imageUrl.split(',')[1]), c => c.charCodeAt(0));
+        const image = ann.imageUrl.startsWith('data:image/png') ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+        page.drawImage(image, { x, y, width: w, height: h, opacity: ann.opacity ?? 1 });
+      } else if (ann.type === 'text') {
+        const font = ann.fontWeight === 'bold' ? ann.fontStyle === 'italic' ? boldItalic : bold : ann.fontStyle === 'italic' ? italic : regular;
+        const size = ann.fontSize || 12;
+        const lines = wrapText(ann.text || '', Math.max(1, w - 8), value => font.widthOfTextAtSize(value, size));
+        if (lines.length * size * 1.25 + 8 > h + .1) throw new Error(`O texto da página ${index + 1} não cabe na caixa. Aumente a altura ou reduza a fonte antes de exportar.`);
+        if (ann.bgColor) page.drawRectangle({ x, y, width: w, height: h, color: color(ann.bgColor) });
+        let baseline = y + h - size - 4;
+        for (const line of lines) {
+          const textWidth = font.widthOfTextAtSize(line, size);
+          const lineX = ann.textAlign === 'center' ? x + (w - textWidth) / 2 : ann.textAlign === 'right' ? x + w - textWidth - 4 : x + 4;
+          page.drawText(line, { x: lineX, y: baseline, size, font, color: color(ann.color), lineHeight: size * 1.25 });
+          baseline -= size * 1.25;
         }
       }
+      page.pushOperators(popGraphicsState());
     }
   }
-
-  const finalBytes = await pdfDoc.save();
-  return finalBytes;
+  return pdf.save();
 }
-

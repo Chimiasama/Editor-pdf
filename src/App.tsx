@@ -10,8 +10,9 @@ import {
   PageAnnotation,
   PageMetadata,
   AnnotationType,
+  EditorTool,
 } from './types/pdf';
-import { createSampleRpgPdf, generateWolfCrestPng } from './utils/samplePdfGenerator';
+import { createSampleRpgPdf } from './utils/samplePdfGenerator';
 import { loadPdfJsDocument, exportEditedPdf, downloadFile } from './utils/pdfEngine';
 import { DocumentLibrary } from './components/DocumentLibrary';
 import { EditorToolbar } from './components/EditorToolbar';
@@ -19,6 +20,10 @@ import { PdfCanvasEditor } from './components/PdfCanvasEditor';
 import { DocumentSidebar } from './components/DocumentSidebar';
 import { ThumbnailDrawer } from './components/ThumbnailDrawer';
 import { CropModal } from './components/CropModal';
+import { DocumentEditor } from './components/DocumentEditor';
+import * as store from './utils/documentStore';
+import { readOutline } from './utils/pdfText';
+import { createHistory, recordEdit, undoEdit, redoEdit, type EditHistory } from './utils/editHistory';
 
 // Storage key for documents list
 const STORAGE_DOCS_KEY = 'pdf_studio_documents_v1';
@@ -36,18 +41,23 @@ export default function App() {
   const [pdfProxy, setPdfProxy] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.15);
-  const [activeTool, setActiveTool] = useState<AnnotationType | 'select' | 'pan'>('select');
+  const [activeTool, setActiveTool] = useState<EditorTool>('pan');
   const [readingTheme, setReadingTheme] = useState<'light' | 'dark' | 'sepia'>('light');
 
   // UI Panels
-  const [isDocumentPanelOpen, setIsDocumentPanelOpen] = useState<boolean>(true);
+  const [isDocumentPanelOpen, setIsDocumentPanelOpen] = useState<boolean>(false);
   const [isThumbnailDrawerOpen, setIsThumbnailDrawerOpen] = useState<boolean>(false);
   const [isCropModalOpen, setIsCropModalOpen] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
 
-  // Undo/Redo history stack
-  const [history, setHistory] = useState<Record<number, PageMetadata>[]>([]);
-  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const documentsRef = useRef<PdfDocumentRecord[]>([]);
+  const histories = useRef<Record<string, EditHistory<Record<number, PageMetadata>>>>({});
+  const [isReady, setIsReady] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('Carregando biblioteca…');
+  const [mode, setMode] = useState<'pdf' | 'document'>('pdf');
+  const saveQueue = useRef(Promise.resolve());
+  const saveVersion = useRef(0);
+  const activeHistory = activeDoc ? histories.current[activeDoc.id] : undefined;
 
   // Status Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -56,37 +66,42 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // 1. Initial Load: Retrieve stored documents or generate Sample RPG Book
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_DOCS_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setDocuments(parsed);
-          return;
+    let cancelled = false;
+    (async () => {
+      let saved = await store.listDocuments();
+      if (!saved.length) {
+        const legacy = JSON.parse(localStorage.getItem(STORAGE_DOCS_KEY) || '[]');
+        if (Array.isArray(legacy)) {
+          saved = legacy;
+          for (const doc of saved) await store.saveDocument(doc);
+          localStorage.removeItem(STORAGE_DOCS_KEY);
         }
-      } catch (e) {
-        console.warn('Could not parse saved documents:', e);
       }
-    }
-
-    // If no documents exist, create the sample RPG rulebook automatically!
-    handleCreateSampleRpg(true);
+      if (!cancelled) {
+        documentsRef.current = saved;
+        setDocuments(saved);
+        setSaveStatus('Salvo no aparelho');
+        setIsReady(true);
+      }
+    })().catch(error => {
+      if (!cancelled) { setSaveStatus('Falha ao abrir armazenamento: ' + error.message); setIsReady(true); }
+    });
+    return () => { cancelled = true; };
   }, []);
 
-  // Sync documents list to localStorage (excluding huge binary URIs to avoid quota exhaustion)
   const syncDocumentsToStorage = (updatedDocs: PdfDocumentRecord[]) => {
+    const previous = documentsRef.current;
+    documentsRef.current = updatedDocs;
     setDocuments(updatedDocs);
-    try {
-      const lightweightDocs = updatedDocs.map((doc) => ({
-        ...doc,
-        pdfDataUri: undefined, // keep binary in memory
-      }));
-      localStorage.setItem(STORAGE_DOCS_KEY, JSON.stringify(lightweightDocs));
-    } catch (e) {
-      console.warn('LocalStorage save failed:', e);
-    }
+    const changed = updatedDocs.filter(doc => previous.find(old => old.id === doc.id) !== doc);
+    const version = ++saveVersion.current;
+    setSaveStatus('Salvando…');
+    const operation = saveQueue.current.then(async () => {
+      for (const doc of changed) await store.saveDocument(doc);
+    });
+    saveQueue.current = operation.catch(() => {});
+    operation.then(() => { if (version === saveVersion.current) setSaveStatus('Salvo no aparelho'); }).catch(error => setSaveStatus('Não foi salvo: ' + error.message));
   };
 
   // Helper to generate Sample RPG Book
@@ -140,12 +155,14 @@ export default function App() {
         pageMetadata: {},
       };
 
-      const updated = [newDoc, ...documents.filter((d) => d.id !== newDocId)];
+      await store.saveDocument(newDoc, bytes);
+      const updated = [newDoc, ...documentsRef.current.filter((d) => d.id !== newDocId)];
       syncDocumentsToStorage(updated);
+      setMode('pdf');
       setActiveDocId(newDocId);
 
       if (!isInitial) {
-        showToast('Livro de RPG gerado com sucesso! Teste o índice de capítulos e a remoção da aranha.');
+        showToast('Livro de exemplo criado');
       }
     } catch (err: any) {
       console.error('Failed to create sample RPG:', err);
@@ -157,6 +174,7 @@ export default function App() {
 
   // Upload custom PDF file from device
   const handleFileUpload = async (file: File) => {
+    try {
     const arrayBuffer = await file.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     const newDocId = `doc-upload-${Date.now()}`;
@@ -165,7 +183,6 @@ export default function App() {
     const blob = new Blob([bytes], { type: 'application/pdf' });
     const dataUri = URL.createObjectURL(blob);
 
-    try {
       const tempPdf = await loadPdfJsDocument(bytes);
       const pageCount = tempPdf.numPages;
 
@@ -178,12 +195,15 @@ export default function App() {
         lastOpenedAt: Date.now(),
         createdAt: Date.now(),
         pdfDataUri: dataUri,
-        tableOfContents: [],
+        tableOfContents: await readOutline(tempPdf),
         pageMetadata: {},
       };
 
-      const updated = [newDoc, ...documents];
+      await store.saveDocument(newDoc, bytes);
+      await tempPdf.loadingTask.destroy();
+      const updated = [newDoc, ...documentsRef.current];
       syncDocumentsToStorage(updated);
+      setMode('pdf');
       setActiveDocId(newDocId);
       showToast(`PDF "${file.name}" carregado com sucesso!`);
     } catch (e: any) {
@@ -194,15 +214,16 @@ export default function App() {
   // Toggle Favorite
   const handleToggleFavorite = (docId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = documents.map((d) => (d.id === docId ? { ...d, isFavorite: !d.isFavorite } : d));
+    const updated = documentsRef.current.map((d) => (d.id === docId ? { ...d, isFavorite: !d.isFavorite } : d));
     syncDocumentsToStorage(updated);
   };
 
   // Delete Document
-  const handleDeleteDocument = (docId: string, e: React.MouseEvent) => {
+  const handleDeleteDocument = async (docId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('Tem certeza que deseja excluir este PDF da lista?')) {
-      const updated = documents.filter((d) => d.id !== docId);
+      try { await saveQueue.current; await store.deleteStoredDocument(docId); } catch (error) { alert('Não foi possível excluir o arquivo.'); return; }
+      const updated = documentsRef.current.filter((d) => d.id !== docId);
       delete pdfBytesCache.current[docId];
       syncDocumentsToStorage(updated);
       if (activeDocId === docId) {
@@ -219,29 +240,26 @@ export default function App() {
     }
 
     let isMounted = true;
-    const bytes = pdfBytesCache.current[activeDocId];
-
-    if (!bytes) {
-      // Re-create sample if cache was cleared
-      handleCreateSampleRpg();
-      return;
-    }
-
-    loadPdfJsDocument(bytes)
-      .then(async (proxy) => {
-        if (!isMounted) return;
+    let loaded: pdfjsLib.PDFDocumentProxy | undefined;
+    setPdfProxy(null);
+    setCurrentPage(1);
+    setActiveTool('pan');
+    setIsDocumentPanelOpen(false);
+    setIsThumbnailDrawerOpen(false);
+    (async () => {
+      const bytes = pdfBytesCache.current[activeDocId] ?? await store.readDocumentBytes(activeDocId);
+      if (!bytes) throw new Error('Arquivo antigo não está salvo. Importe novamente pelo botão Abrir PDF.');
+      pdfBytesCache.current[activeDocId] = bytes;
+      const proxy = await loadPdfJsDocument(bytes);
+      loaded = proxy;
+      if (isMounted) {
         setPdfProxy(proxy);
-        setCurrentPage(1);
-
-
-      })
-      .catch((err) => {
-        console.error('Failed to parse PDF bytes:', err);
-      });
-
-    return () => {
-      isMounted = false;
-    };
+        const page = await proxy.getPage(1);
+        const available = Math.max(240, window.innerWidth - 32);
+        setScale(Math.min(1.25, available / page.getViewport({ scale: 1 }).width));
+      } else await proxy.loadingTask.destroy();
+    })().catch(error => { if (isMounted) showToast(error.message); });
+    return () => { isMounted = false; if (loaded) void loaded.loadingTask.destroy(); };
   }, [activeDocId]);
 
   // Current page metadata & annotations
@@ -251,56 +269,24 @@ export default function App() {
     annotations: [],
   };
 
-  // Update page metadata with history tracking
-  const updatePageMetadata = (
-    updater: (prev: Record<number, PageMetadata>) => Record<number, PageMetadata>
-  ) => {
-    if (!activeDoc) return;
-    const currentMetaMap = activeDoc.pageMetadata || {};
-    const nextMetaMap = updater(currentMetaMap);
-
-    // Save to history for undo/redo
-    const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(nextMetaMap);
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
-
-    const updated = documents.map((d) =>
-      d.id === activeDoc.id
-        ? {
-            ...d,
-            pageMetadata: nextMetaMap,
-            lastOpenedAt: Date.now(),
-          }
-        : d
-    );
-    syncDocumentsToStorage(updated);
+  const updatePageMetadata = (updater: (prev: Record<number, PageMetadata>) => Record<number, PageMetadata>) => {
+    if (!activeDocId) return;
+    const doc = documentsRef.current.find(d => d.id === activeDocId);
+    if (!doc) return;
+    const next = updater(doc.pageMetadata || {});
+    histories.current[doc.id] = recordEdit(histories.current[doc.id] || createHistory(doc.pageMetadata || {}), next);
+    syncDocumentsToStorage(documentsRef.current.map(d => d.id === doc.id ? { ...d, pageMetadata: next, lastOpenedAt: Date.now() } : d));
   };
-
-  // Undo / Redo handlers
-  const handleUndo = () => {
-    if (historyIndex > 0 && activeDoc) {
-      const prevMeta = history[historyIndex - 1];
-      setHistoryIndex(historyIndex - 1);
-      const updated = documents.map((d) =>
-        d.id === activeDoc.id ? { ...d, pageMetadata: prevMeta } : d
-      );
-      syncDocumentsToStorage(updated);
-      showToast('Ação desfeita');
-    }
+  const travelHistory = (direction: 'undo' | 'redo') => {
+    if (!activeDocId) return;
+    const history = histories.current[activeDocId];
+    if (!history) return;
+    const next = direction === 'undo' ? undoEdit(history) : redoEdit(history);
+    histories.current[activeDocId] = next;
+    syncDocumentsToStorage(documentsRef.current.map(d => d.id === activeDocId ? { ...d, pageMetadata: next.present } : d));
   };
-
-  const handleRedo = () => {
-    if (historyIndex < history.length - 1 && activeDoc) {
-      const nextMeta = history[historyIndex + 1];
-      setHistoryIndex(historyIndex + 1);
-      const updated = documents.map((d) =>
-        d.id === activeDoc.id ? { ...d, pageMetadata: nextMeta } : d
-      );
-      syncDocumentsToStorage(updated);
-      showToast('Ação refeita');
-    }
-  };
+  const handleUndo = () => travelHistory('undo');
+  const handleRedo = () => travelHistory('redo');
 
   // Add Annotation to current page
   const handleAddAnnotation = (ann: Omit<PageAnnotation, 'id' | 'createdAt'>) => {
@@ -312,14 +298,14 @@ export default function App() {
     };
 
     updatePageMetadata((prev) => {
-      const currentMeta = prev[currentPage] || {
-        pageNumber: currentPage,
+      const currentMeta = prev[ann.pageNumber] || {
+        pageNumber: ann.pageNumber,
         rotation: 0,
         annotations: [],
       };
       return {
         ...prev,
-        [currentPage]: {
+        [ann.pageNumber]: {
           ...currentMeta,
           annotations: [...currentMeta.annotations, fullAnnotation],
         },
@@ -327,9 +313,9 @@ export default function App() {
     });
 
     if (ann.type === 'whiteout') {
-      showToast('Elemento ocultado com sucesso (diagramação preservada)');
+      showToast('Região coberta visualmente. O conteúdo original continua no PDF.');
     } else if (ann.type === 'image') {
-      showToast('Imagem inserida perfeitamente');
+      showToast('Imagem adicionada');
     }
   };
 
@@ -403,52 +389,6 @@ export default function App() {
     showToast(`Enquadramento aplicado na Página ${currentPage}`);
   };
 
-  // QUICK ACTION: REMOVE SPIDER (As requested explicitly by user!)
-  const handleQuickRemoveSpider = () => {
-    if (!activeDoc) return;
-    setCurrentPage(5); // Spider is on page 5
-    // Coordinates covering the spider illustration cleanly with white background
-    handleAddAnnotation({
-      pageNumber: 5,
-      type: 'whiteout',
-      x: 18,
-      y: 31,
-      width: 64,
-      height: 35,
-      bgColor: '#ffffff',
-    });
-    showToast('Aranha removida com sucesso! O texto e a diagramação permanecem intactos.');
-  };
-
-  // QUICK ACTION: REPLACE SPIDER WITH WOLF CREST
-  const handleQuickReplaceWithWolfCrest = () => {
-    if (!activeDoc) return;
-    setCurrentPage(5);
-    // First, mask the spider
-    handleAddAnnotation({
-      pageNumber: 5,
-      type: 'whiteout',
-      x: 18,
-      y: 31,
-      width: 64,
-      height: 35,
-      bgColor: '#ffffff',
-    });
-    // Second, place the Wolf Crest in the exact box
-    handleAddAnnotation({
-      pageNumber: 5,
-      type: 'image',
-      x: 18,
-      y: 31,
-      width: 64,
-      height: 35,
-      imageUrl: generateWolfCrestPng(),
-      imageLabel: 'Brasão do Lobo dos Montes Nevados',
-      opacity: 1.0,
-    });
-    showToast('Arte da aranha substituída pelo Brasão do Lobo!');
-  };
-
   // Export / Download edited PDF
   const handleExportPdf = async () => {
     if (!activeDoc) return;
@@ -468,7 +408,7 @@ export default function App() {
       // Trigger download
       const cleanFileName = activeDoc.title.replace('.pdf', '') + '_editado.pdf';
       await downloadFile(editedBytes, cleanFileName);
-      showToast('PDF baixado com todas as edições preservadas!');
+      showToast('Cópia editada exportada');
     } catch (err: any) {
       console.error('Export error:', err);
       alert('Erro ao exportar PDF: ' + err.message);
@@ -494,12 +434,15 @@ export default function App() {
     {} as Record<number, number>
   );
 
+  if (!isReady) return <div className="p-8 text-white">Carregando biblioteca…</div>;
+
   // VIEW 1: DOCUMENT LIBRARY
   if (!activeDocId || !activeDoc) {
     return (
       <DocumentLibrary
+        storageStatus={saveStatus}
         documents={documents}
-        onSelectDocument={(id) => setActiveDocId(id)}
+        onSelectDocument={(id) => { setMode('pdf'); setActiveDocId(id); }}
         onToggleFavorite={handleToggleFavorite}
         onDeleteDocument={handleDeleteDocument}
         onCreateSampleRpg={() => handleCreateSampleRpg(false)}
@@ -509,11 +452,16 @@ export default function App() {
     );
   }
 
+  if (mode === 'document') return <DocumentEditor key={activeDoc.id} document={activeDoc} pdfDoc={pdfProxy}
+    onBack={() => setMode('pdf')} onChange={content => syncDocumentsToStorage(documentsRef.current.map(d => d.id === activeDoc.id ? { ...d, documentContent: content } : d))} saveStatus={saveStatus} />;
+
   // VIEW 2: PDF VIEWER & EDITOR WORKSPACE
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <div className="h-dvh w-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
       {/* Top Toolbar */}
       <EditorToolbar
+        onDocumentMode={() => setMode('document')}
+        saveStatus={saveStatus}
         documentTitle={activeDoc.title}
         currentPage={currentPage}
         totalPages={activeDoc.pageCount}
@@ -534,17 +482,18 @@ export default function App() {
         }
         onUndo={handleUndo}
         onRedo={handleRedo}
-        canUndo={historyIndex > 0}
-        canRedo={historyIndex < history.length - 1}
+        canUndo={!!activeHistory?.past.length}
+        canRedo={!!activeHistory?.future.length}
         onExportPdf={handleExportPdf}
         isExporting={isExporting}
         onBackToLibrary={() => setActiveDocId(null)}
       />
 
       {/* Main Workspace: Left Drawer (Thumbnails) + Center (PDF Canvas) + Right Drawer (Document Sidebar) */}
-      <div className="flex-1 flex overflow-hidden relative">
+      <div className="flex-1 flex overflow-hidden relative mb-28">
         {/* Left Drawer: Page Thumbnails */}
         <ThumbnailDrawer
+          pdfDoc={pdfProxy}
           isOpen={isThumbnailDrawerOpen}
           onClose={() => setIsThumbnailDrawerOpen(false)}
           totalPages={activeDoc.pageCount}
@@ -583,8 +532,6 @@ export default function App() {
           currentPage={currentPage}
           tableOfContents={activeDoc.tableOfContents || []}
           onNavigateToPage={(pg) => setCurrentPage(pg)}
-          onQuickRemoveSpider={handleQuickRemoveSpider}
-          onQuickReplaceWithWolfCrest={handleQuickReplaceWithWolfCrest}
         />
       </div>
 
@@ -599,7 +546,7 @@ export default function App() {
 
       {/* Floating Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-900 border border-indigo-500/50 text-white text-xs font-semibold shadow-2xl flex items-center space-x-2 animate-in fade-in slide-in-from-bottom-3 duration-200">
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-900 border border-indigo-500/50 text-white text-xs font-semibold shadow-2xl flex items-center space-x-2 animate-in fade-in slide-in-from-bottom-3 duration-200">
           <span className="w-2 h-2 rounded-full bg-emerald-400" />
           <span>{toastMessage}</span>
         </div>

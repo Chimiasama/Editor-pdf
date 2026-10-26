@@ -42,3 +42,11 @@ test('text and whiteout append content streams while retaining original content'
   assert.ok(exported.getPage(0).node.lookup(PDFName.of('Contents'), PDFArray).size() > before);
   assert.equal(exported.getPageCount(), 2);
 });
+
+test('export rejects overflowing text rather than silently dropping lines', async () => {
+  await assert.rejects(exportEditedPdf(await fixture(), {
+    1: { pageNumber: 1, rotation: 0, annotations: [
+      { id: 'overflow', pageNumber: 1, type: 'text', x: 10, y: 10, width: 10, height: 2, text: 'A long paragraph that cannot fit in a tiny box', fontSize: 18, createdAt: 0 },
+    ] },
+  }), /não cabe/);
+});

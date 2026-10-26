@@ -6,7 +6,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 
 // Configure PDF.js worker
 if (typeof window !== 'undefined') {
-  // Use cdnjs worker matching pdfjs-dist version
+  // Bundle the worker with the exact installed PDF.js version.
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 }
 
@@ -20,7 +20,8 @@ export interface ExtractedPageText {
  */
 export async function loadPdfJsDocument(pdfData: Uint8Array | ArrayBuffer): Promise<pdfjsLib.PDFDocumentProxy> {
   const loadingTask = pdfjsLib.getDocument({
-    data: pdfData,
+    // PDF.js transfers buffers to its worker; retain the saved original.
+    data: pdfData instanceof Uint8Array ? pdfData.slice() : pdfData.slice(0),
     cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`,
     cMapPacked: true,
     standardFontDataUrl: `${import.meta.env.BASE_URL}pdfjs/standard_fonts/`,
@@ -57,10 +58,10 @@ export async function renderPdfPage(
 
   const renderContext = {
     canvasContext: ctx,
+    canvas,
     viewport: viewport,
   };
 
-  // @ts-ignore
   await page.render(renderContext).promise;
   ctx.restore();
 
