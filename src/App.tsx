@@ -36,11 +36,17 @@ import type {
   PdfInfo,
   PageContent,
   TextRun,
+  TextBlock,
   PageImage,
   HistoryState,
 } from "./engine/types";
 import { ReaderPage, type ReaderTool } from "./components/ReaderPage";
 import { Modal } from "./components/Modal";
+import {
+  TextEditorDialog,
+  type TextSelection,
+} from "./components/TextEditorDialog";
+import { foldText } from "./engine/textLayout";
 import * as store from "./utils/documentStore";
 import type { PdfDocumentRecord } from "./types/pdf";
 import { downloadFile } from "./utils/downloadFile";
@@ -83,14 +89,18 @@ export default function App() {
   const [menu, setMenu] = useState(false);
   const [about, setAbout] = useState(false);
   const [libraryQuery, setLibraryQuery] = useState("");
-  const [textEditor, setTextEditor] = useState<{
-    run?: TextRun;
-    point?: [number, number];
-  } | null>(null);
-  const [text, setText] = useState("");
-  const [fontSize, setFontSize] = useState(12);
-  const [color, setColor] = useState("#171717");
-  const [fit, setFit] = useState(true);
+  const [textEditor, setTextEditor] = useState<TextSelection | null>(null);
+  const [selectionMode, setSelectionMode] = useState<"paragraph" | "run">(
+    "paragraph",
+  );
+  const contentKey = useRef("");
+  const writes = useRef(Promise.resolve());
+  const draftVersion = useRef(0);
+  function enqueueWrite(task: () => Promise<void>) {
+    const operation = writes.current.then(task);
+    writes.current = operation.catch(() => {});
+    return operation;
+  }
   const [selectedImage, setSelectedImage] = useState<PageImage | null>(null);
   const [imagePoint, setImagePoint] = useState<[number, number] | null>(null);
   const [imageFile, setImageFile] = useState<{
@@ -143,7 +153,11 @@ export default function App() {
   useEffect(() => {
     if (!active || !clientRef.current) return;
     let cancelled = false;
-    setContent(null);
+    const key = active.id + ":" + page;
+    if (contentKey.current !== key) {
+      setContent(null);
+      contentKey.current = key;
+    }
     clientRef.current
       .call("content", { page })
       .then((c) => {
@@ -217,6 +231,7 @@ export default function App() {
             })),
             pageMetadata: {},
           };
+      await writes.current;
       if (working) await store.saveWorkingCopy(nextDoc, bytes);
       else await store.saveDocument(nextDoc, doc ? undefined : bytes);
       clientRef.current?.destroy();
@@ -224,7 +239,9 @@ export default function App() {
       activeRef.current = nextDoc;
       setActive(nextDoc);
       setInfo(nextInfo);
-      setPage(1);
+      setContent(null);
+      contentKey.current = "";
+      setPage(Math.max(1, Math.min(nextInfo.pageCount, nextDoc.lastPage || 1)));
       setZoom(1);
       setTool("read");
       setHistory(emptyHistory);
@@ -253,6 +270,10 @@ export default function App() {
   }
   function importFile(file?: File) {
     if (!file) return;
+    if (activeRef.current && saveStatus.startsWith("Não salvo")) {
+      setError("Salve uma cópia do documento atual antes de abrir outro PDF.");
+      return;
+    }
     void runTask("Abrindo PDF…", async () => {
       const bytes = new Uint8Array(await file.arrayBuffer());
       await openBytes(bytes, file.name);
@@ -284,7 +305,7 @@ export default function App() {
     const bytes = await clientRef.current!.call("save", undefined);
     const updated = { ...doc, hasWorkingCopy: true, lastOpenedAt: Date.now() };
     try {
-      await store.saveWorkingCopy(updated, bytes);
+      await enqueueWrite(() => store.saveWorkingCopy(updated, bytes));
       updateActive(updated);
       setSaveStatus("Salvo no aparelho");
     } catch (e) {
@@ -306,7 +327,7 @@ export default function App() {
       setTool(
         edit.type === "insert-image"
           ? "images"
-          : edit.type === "insert-text"
+          : edit.type === "insert-text" || edit.type === "insert-block"
             ? "text"
             : tool,
       );
@@ -329,6 +350,8 @@ export default function App() {
     void runTask("Preparando cópia…", async () => {
       const bytes = await clientRef.current!.call("save", undefined);
       await downloadFile(bytes, copyName(activeRef.current!.title));
+      if (saveStatus.startsWith("Não salvo"))
+        setSaveStatus("Cópia exportada · armazenamento indisponível");
       notice("Cópia editada pronta para salvar");
     });
   }
@@ -349,18 +372,34 @@ export default function App() {
     setMenu(false);
     void refreshLibrary();
   }
-  function selectText(run?: TextRun, point?: [number, number]) {
+  function selectText(run?: TextRun | TextBlock, point?: [number, number]) {
     setError("");
     setTextEditor({ run, point });
-    setText(run?.text || "");
-    setFontSize(run ? Math.round(run.size * 10) / 10 : 12);
-    setColor(run?.color || "#171717");
-    setFit(true);
   }
   function changePage(n: number) {
     if (!info || busyRef.current) return;
-    setPage(Math.min(info.pageCount, Math.max(1, Math.round(n) || 1)));
+    const next = Math.min(info.pageCount, Math.max(1, Math.round(n) || 1));
+    setPage(next);
     setSelectedImage(null);
+    const doc = activeRef.current;
+    if (doc && doc.lastPage !== next) {
+      const updated = { ...doc, lastPage: next };
+      updateActive(updated);
+      setSaveStatus("Salvando página…");
+      void enqueueWrite(() => store.saveDocument(updated))
+        .then(() => {
+          if (
+            activeRef.current?.id === doc.id &&
+            activeRef.current.lastPage === next &&
+            !busyRef.current
+          )
+            setSaveStatus("Salvo no aparelho");
+        })
+        .catch((e) => {
+          setError("Não foi possível lembrar a página: " + errorMessage(e));
+          setSaveStatus("Não foi possível lembrar a página");
+        });
+    }
   }
   async function pickImage(file?: File) {
     if (!file) return;
@@ -412,10 +451,17 @@ export default function App() {
   const filtered = [...documents]
     .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
     .filter((d) => d.title.toLowerCase().includes(libraryQuery.toLowerCase()));
+  const matchingCount =
+    query && content
+      ? content.texts.filter((t) => foldText(t.text).includes(foldText(query)))
+          .length
+      : 0;
   const editing = tool !== "read";
   const help =
     tool === "text"
-      ? "Toque no texto da página para alterar ou apagar."
+      ? selectionMode === "paragraph"
+        ? "Toque em um parágrafo para editar as linhas juntas."
+        : "Toque em um trecho para uma correção pontual."
       : tool === "images"
         ? "Toque em uma imagem para removê-la."
         : tool === "add-text"
@@ -438,10 +484,16 @@ export default function App() {
           onChange={(data) => {
             const doc = { ...activeRef.current!, documentContent: data };
             updateActive(doc);
-            void store
-              .saveDocument(doc)
-              .then(() => setSaveStatus("Salvo no aparelho"))
-              .catch((e) => setError(errorMessage(e)));
+            setSaveStatus("Salvando…");
+            const version = ++draftVersion.current;
+            void enqueueWrite(() => store.saveDocument(doc))
+              .then(() => {
+                if (version === draftVersion.current)
+                  setSaveStatus("Salvo no aparelho");
+              })
+              .catch((e) => {
+                setSaveStatus("Não salvo: " + errorMessage(e));
+              });
           }}
         />
       </Suspense>
@@ -819,7 +871,7 @@ export default function App() {
               />
               <span>
                 {query && content
-                  ? `${content.texts.filter((t) => t.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())).length} trechos`
+                  ? `${matchingCount} ${matchingCount === 1 ? "trecho" : "trechos"}`
                   : ""}
               </span>
               <button
@@ -867,6 +919,31 @@ export default function App() {
               >
                 <ImagePlus size={17} />
                 Inserir imagem
+              </button>
+            </div>
+          )}
+          {tool === "text" && (
+            <div
+              className="selection-mode"
+              role="group"
+              aria-label="Tipo de seleção"
+            >
+              <span>Selecionar</span>
+              <button
+                className={selectionMode === "paragraph" ? "active" : ""}
+                aria-pressed={selectionMode === "paragraph"}
+                onClick={() => setSelectionMode("paragraph")}
+                disabled={!!busy}
+              >
+                Parágrafos
+              </button>
+              <button
+                className={selectionMode === "run" ? "active" : ""}
+                aria-pressed={selectionMode === "run"}
+                onClick={() => setSelectionMode("run")}
+                disabled={!!busy}
+              >
+                Trechos
               </button>
             </div>
           )}
@@ -962,6 +1039,7 @@ export default function App() {
                 content={content}
                 zoom={zoom}
                 tool={tool}
+                selectionMode={selectionMode}
                 disabled={!!busy}
                 search={query}
                 onText={(run) => selectText(run)}
@@ -1075,139 +1153,17 @@ export default function App() {
           {toast}
         </div>
       )}
-      {textEditor && (
-        <Modal
+      {textEditor && content && clientRef.current && (
+        <TextEditorDialog
+          client={clientRef.current}
+          page={page}
+          bounds={content.bounds}
+          selection={textEditor}
+          busy={!!busy}
           error={error}
-          title={textEditor.run ? "Editar texto" : "Adicionar texto"}
           onClose={() => setTextEditor(null)}
-          locked={!!busy}
-        >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (textEditor.run)
-                void mutate({
-                  type: "replace-text",
-                  page,
-                  id: textEditor.run.id,
-                  original: textEditor.run.text,
-                  text,
-                  size: fontSize,
-                  color,
-                  fit,
-                });
-              else if (textEditor.point)
-                void mutate({
-                  type: "insert-text",
-                  page,
-                  point: [
-                    textEditor.point[0],
-                    Math.max(
-                      content!.bounds[1] + fontSize,
-                      textEditor.point[1],
-                    ),
-                  ],
-                  text,
-                  size: fontSize,
-                  color,
-                });
-            }}
-          >
-            <p className="dialog-description">
-              {textEditor.run
-                ? "Altere este trecho. O texto original será substituído na página."
-                : "Escreva uma linha para colocar na posição escolhida."}
-            </p>
-            <label className="field">
-              Texto do trecho
-              <input
-                autoFocus
-                aria-label="Texto do trecho"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                maxLength={2000}
-              />
-            </label>
-            <div className="form-row">
-              <label className="field">
-                Tamanho (pt)
-                <input
-                  type="number"
-                  min="4"
-                  max="144"
-                  step="0.1"
-                  value={fontSize}
-                  onChange={(e) => setFontSize(Number(e.target.value))}
-                  required
-                />
-              </label>
-              <label className="field color-field">
-                Cor
-                <input
-                  type="color"
-                  value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                />
-              </label>
-            </div>
-            {textEditor.run && (
-              <>
-                <label className="check-field">
-                  <input
-                    type="checkbox"
-                    checked={fit}
-                    onChange={(e) => setFit(e.target.checked)}
-                  />
-                  Ajustar o tamanho ao espaço original
-                </label>
-                <p className="field-note">
-                  Fonte: {textEditor.run.fontName}. Se faltar algum caractere,
-                  será usada uma fonte equivalente. Esta edição mantém uma linha
-                  por trecho.
-                </p>
-              </>
-            )}
-            <div className="dialog-actions">
-              {textEditor.run && (
-                <button
-                  className="button danger subtle"
-                  type="button"
-                  disabled={!!busy}
-                  onClick={() =>
-                    void mutate({
-                      type: "replace-text",
-                      page,
-                      id: textEditor.run!.id,
-                      original: textEditor.run!.text,
-                      text: "",
-                      size: fontSize,
-                      color,
-                      fit: true,
-                    })
-                  }
-                >
-                  <Trash2 size={16} />
-                  Apagar texto
-                </button>
-              )}
-              <button
-                className="button secondary"
-                type="button"
-                onClick={() => setTextEditor(null)}
-                disabled={!!busy}
-              >
-                Cancelar
-              </button>
-              <button
-                className="button primary"
-                disabled={!!busy || !text.trim()}
-                type="submit"
-              >
-                Aplicar alteração
-              </button>
-            </div>
-          </form>
-        </Modal>
+          onApply={(edit) => void mutate(edit)}
+        />
       )}
       {selectedImage && (
         <Modal
@@ -1364,7 +1320,9 @@ export default function App() {
               disabled={!!busy}
               onClick={() =>
                 void runTask("Excluindo…", async () => {
-                  await store.deleteStoredDocument(deleting.id);
+                  await enqueueWrite(() =>
+                    store.deleteStoredDocument(deleting.id),
+                  );
                   setDeleting(null);
                   await refreshLibrary();
                 })
@@ -1558,7 +1516,7 @@ export default function App() {
             </a>
           </div>
           <p className="field-note">
-            Esta versão edita trechos de uma linha e imagens separadas.
+            Esta versão edita parágrafos dentro da página e imagens separadas.
             Digitalizações precisam de OCR. O editor de documento, disponível em
             Mais opções, permite escrever com parágrafos e exportar um novo PDF
             com outro layout.

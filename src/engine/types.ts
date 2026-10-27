@@ -8,7 +8,55 @@ export interface TextRun {
   size: number;
   color: string;
   editable: boolean;
+  blockId: number;
+  lineId: number;
 }
+export interface TextBlock extends TextRun {
+  runIds: string[];
+  lineCount: number;
+  lineHeight: number;
+  align?: "left" | "center" | "right";
+}
+export interface TextBlockHint {
+  rect: Rect;
+  lineRects: Rect[];
+  lineHeight: number;
+  align: "left" | "center" | "right";
+  separators: string[];
+}
+export interface TextBoxOptions {
+  rect: Rect;
+  size: number;
+  fit?: boolean;
+  align?: "left" | "center" | "right";
+  lineSpacing?: number;
+}
+export interface TextBoxLayout {
+  lines: {
+    text: string;
+    x: number;
+    baseline: number;
+    width: number;
+    rect: Rect;
+    separatorBefore: string;
+  }[];
+  fontSize: number;
+  lineHeight: number;
+  requiredHeight: number;
+  fits: boolean;
+  rect: Rect;
+  message: string;
+  equivalentFont?: boolean;
+  preview?: RenderedPage;
+}
+export type TextBoxEdit = TextBoxOptions & {
+  page: number;
+  text: string;
+  color: string;
+} & (
+    | { type: "replace-block"; id: string; original: string }
+    | { type: "insert-block" }
+  );
 export interface PageImage {
   id: string;
   rect: Rect;
@@ -18,6 +66,7 @@ export interface PageImage {
 export interface PageContent {
   bounds: Rect;
   texts: TextRun[];
+  blocks: TextBlock[];
   images: PageImage[];
 }
 export interface PdfInfo {
@@ -30,6 +79,7 @@ export interface HistoryState {
   canRedo: boolean;
 }
 export type PdfEdit =
+  | TextBoxEdit
   | {
       type: "replace-text";
       page: number;
@@ -70,6 +120,10 @@ export interface RpcMethods {
   content: { args: { page: number }; result: PageContent };
   render: { args: { page: number; scale: number }; result: RenderedPage };
   edit: { args: PdfEdit; result: EditResult };
+  layout: {
+    args: { edit: TextBoxEdit; preview?: boolean };
+    result: TextBoxLayout;
+  };
   undo: { args: undefined; result: HistoryState };
   redo: { args: undefined; result: HistoryState };
   save: { args: undefined; result: Uint8Array };

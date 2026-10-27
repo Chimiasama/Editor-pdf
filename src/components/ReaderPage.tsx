@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { foldText } from "../engine/textLayout";
 import { LoaderCircle } from "lucide-react";
 import type { PdfClient } from "../engine/client";
-import type { PageContent, TextRun, PageImage } from "../engine/types";
+import type {
+  PageContent,
+  TextRun,
+  TextBlock,
+  PageImage,
+} from "../engine/types";
 export type ReaderTool = "read" | "text" | "images" | "add-text" | "add-image";
 interface Props {
   client: PdfClient;
@@ -12,7 +18,8 @@ interface Props {
   tool: ReaderTool;
   disabled: boolean;
   search: string;
-  onText: (text: TextRun) => void;
+  selectionMode: "paragraph" | "run";
+  onText: (text: TextRun | TextBlock) => void;
   onImage: (image: PageImage) => void;
   onPoint: (point: [number, number]) => void;
   onError: (message: string) => void;
@@ -28,6 +35,7 @@ export function ReaderPage({
   disabled,
   search,
   onText,
+  selectionMode,
   onImage,
   onPoint,
   onError,
@@ -58,35 +66,40 @@ export function ReaderPage({
   useEffect(() => {
     let cancelled = false;
     setRendering(true);
-    client
-      .call("render", {
-        page,
-        scale: scale * Math.min(window.devicePixelRatio || 1, 2),
-      })
-      .then((result) => {
-        if (cancelled || !canvas.current) return;
-        const el = canvas.current;
-        el.width = result.width;
-        el.height = result.height;
-        el.getContext("2d")?.putImageData(
-          new ImageData(
-            new Uint8ClampedArray(result.pixels),
-            result.width,
-            result.height,
-          ),
-          0,
-          0,
-        );
-        setRendering(false);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setRendering(false);
-          onError(error.message);
-        }
-      });
+    const timer = setTimeout(
+      () =>
+        client
+          .call("render", {
+            page,
+            scale: scale * Math.min(window.devicePixelRatio || 1, 2),
+          })
+          .then((result) => {
+            if (cancelled || !canvas.current) return;
+            const el = canvas.current;
+            el.width = result.width;
+            el.height = result.height;
+            el.getContext("2d")?.putImageData(
+              new ImageData(
+                new Uint8ClampedArray(result.pixels),
+                result.width,
+                result.height,
+              ),
+              0,
+              0,
+            );
+            setRendering(false);
+          })
+          .catch((error) => {
+            if (!cancelled) {
+              setRendering(false);
+              onError(error.message);
+            }
+          }),
+      80,
+    );
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [client, page, revision, scale]);
   useEffect(() => {
@@ -98,11 +111,7 @@ export function ReaderPage({
     width: (rect[2] - rect[0]) * scale,
     height: (rect[3] - rect[1]) * scale,
   });
-  const normalize = (s: string) =>
-    s
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
+  const normalize = foldText;
   return (
     <div
       className="reader-scroll"
@@ -177,7 +186,10 @@ export function ReaderPage({
           {!rendering &&
             !disabled &&
             tool === "text" &&
-            content.texts.map((text) => (
+            (selectionMode === "paragraph"
+              ? content.blocks
+              : content.texts
+            ).map((text) => (
               <button
                 key={text.id}
                 className={`text-target ${text.editable ? "" : "unsupported"}`}
@@ -188,6 +200,7 @@ export function ReaderPage({
                   e.stopPropagation();
                   onText(text);
                 }}
+                data-text-block={"runIds" in text ? text.id : undefined}
                 title={
                   text.editable
                     ? text.text

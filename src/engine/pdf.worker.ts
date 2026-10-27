@@ -23,6 +23,9 @@ self.onmessage = (
         case "render":
           result = engine.render(args.page, args.scale);
           break;
+        case "layout":
+          result = engine.layout(args.edit, args.preview);
+          break;
         case "edit":
           result = engine.edit(args);
           break;
@@ -45,6 +48,14 @@ self.onmessage = (
       else if (method === "render")
         transfer.push(
           (result as { pixels: Uint8ClampedArray }).pixels
+            .buffer as ArrayBuffer,
+        );
+      if (
+        method === "layout" &&
+        (result as { preview?: { pixels: Uint8ClampedArray } }).preview
+      )
+        transfer.push(
+          (result as { preview: { pixels: Uint8ClampedArray } }).preview.pixels
             .buffer as ArrayBuffer,
         );
       self.postMessage({ id, result }, { transfer });

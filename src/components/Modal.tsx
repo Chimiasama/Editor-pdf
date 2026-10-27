@@ -6,12 +6,14 @@ export function Modal({
   onClose,
   locked = false,
   error,
+  className = "",
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   locked?: boolean;
   error?: string;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -22,14 +24,22 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className="dialog"
+      className={`dialog ${className}`}
       aria-label={title}
       onCancel={(e) => {
         e.preventDefault();
         if (!locked) onClose();
       }}
       onClick={(e) => {
-        if (e.target === ref.current && !locked) onClose();
+        if (e.target !== ref.current || locked) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        if (
+          e.clientX < rect.left ||
+          e.clientX > rect.right ||
+          e.clientY < rect.top ||
+          e.clientY > rect.bottom
+        )
+          onClose();
       }}
     >
       <div className="dialog-head">

@@ -1,5 +1,7 @@
 # Edição real com MuPDF — plano de execução
 
+> Esta é a primeira etapa. A edição por linha foi ampliada na [segunda etapa de edição por parágrafos](EDICAO-PARAGRAFOS.md).
+
 Esta fase substitui a correção visual por alteração do conteúdo PDF. O plano anterior (`PLANO-MELHORIAS.md`) descreve a base já existente; esta fase aproveita IndexedDB, Capacitor e a exportação Android. Sem IA ou documentos de exemplo automáticos.
 
 1. **Motor:** integrar MuPDF.js 1.28.1 em Web Worker, extrair trechos e imagens, modificar conteúdo real, manter histórico e salvar sem revisões antigas.

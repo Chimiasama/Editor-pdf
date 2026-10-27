@@ -64,6 +64,7 @@ export interface PdfDocumentRecord {
   isFavorite: boolean;
   category?: string;
   lastOpenedAt: number;
+  lastPage?: number;
   createdAt: number;
   hasWorkingCopy?: boolean;
   archivedPageMetadata?: Record<number, PageMetadata>;

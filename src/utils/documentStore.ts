@@ -35,9 +35,14 @@ async function transaction<T>(
     tx.onerror = () =>
       reject(tx.error ?? new Error("Não foi possível salvar no aparelho."));
     tx.onabort = () => reject(tx.error ?? new Error("Gravação interrompida."));
-    run(tx, (result) => {
-      value = result;
-    });
+    try {
+      run(tx, (result) => {
+        value = result;
+      });
+    } catch (error) {
+      tx.abort();
+      reject(error);
+    }
   });
 }
 export function listDocuments() {
