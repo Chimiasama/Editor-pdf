@@ -1,0 +1,53 @@
+name: Windows — instalador e atualizações
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: desktop-windows
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.19.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: bun install --frozen-lockfile
+      - run: npm run lint
+      - run: npm test
+      - name: Preparar versão e assinatura
+        id: version
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+        run: node scripts/prepare-desktop-release.mjs ${{ github.run_number }}
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          tagName: windows-v${{ steps.version.outputs.version }}
+          releaseName: EditPDF Windows ${{ steps.version.outputs.version }}
+          releaseBody: 'Instalador Windows x64. Atualizações dentro do aplicativo dependem da ativação da assinatura descrita em docs/DESKTOP.md. Os PDFs são processados localmente.'
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: ${{ steps.version.outputs.signed == 'true' }}
+          args: --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EditPDF-Windows
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

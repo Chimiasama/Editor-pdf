@@ -15,3 +15,8 @@ playwright-report/
 
 # Local scratch work
 work/
+
+# Desktop build and private updater signing material
+src-tauri/target/
+src-tauri/gen/
+.desktop-signing/

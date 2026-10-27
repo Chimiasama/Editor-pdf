@@ -13,7 +13,11 @@
     "test": "tsx --test tests/*.test.ts",
     "android:prepare": "node scripts/prepare-android.mjs",
     "android:apk": "npm run build && npm run android:prepare && cd android && ./gradlew assembleDebug --no-daemon --max-workers=2",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:setup-updater": "node scripts/setup-desktop-updater.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
@@ -22,6 +26,9 @@
     "@capacitor/share": "^8.0.3",
     "@pdf-lib/fontkit": "^1.1.1",
     "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2",
     "@tiptap/extension-image": "^3.32.0",
     "@tiptap/extension-text-align": "^3.32.0",
     "@tiptap/extension-text-style": "^3.32.0",
@@ -42,6 +49,7 @@
   "devDependencies": {
     "@capacitor/cli": "^8.5.3",
     "@playwright/test": "^1.64.1",
+    "@tauri-apps/cli": "^2",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/pdfmake": "^0.3.3",

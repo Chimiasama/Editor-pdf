@@ -1,0 +1,17 @@
+[package]
+name = "editpdf-desktop"
+version = "0.2.0"
+description = "EditPDF desktop"
+authors = ["EditPDF contributors"]
+license = "AGPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.90"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"

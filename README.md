@@ -51,3 +51,7 @@ O armazenamento é local à instalação/origem. Limpar dados do aplicativo ou n
 ## Licença
 
 Esta versão combinada com MuPDF é disponibilizada sob **AGPL-3.0-or-later**; veja [LICENSE](LICENSE) e [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). MuPDF/MuPDF.js é Copyright Artifex Software, Inc. Dependências e trechos preexistentes mantêm seus avisos e licenças aplicáveis. O código correspondente da aplicação e as instruções de compilação estão neste repositório. O código do motor está nos projetos oficiais [MuPDF](https://github.com/ArtifexSoftware/mupdf) e [MuPDF.js](https://github.com/ArtifexSoftware/mupdf.js).
+
+## Windows (Tauri)
+
+O instalador para PC é publicado automaticamente em [Releases](https://github.com/Chimiasama/Editor-pdf/releases/latest) a cada push na main. A atualização pelo aplicativo precisa de uma configuração única de assinatura pelo proprietário; até ela ser feita, o programa informa que esse recurso aguarda ativação. Veja [docs/DESKTOP.md](docs/DESKTOP.md) para instalar, ativar as atualizações e desenvolver.

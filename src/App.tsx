@@ -1,3 +1,4 @@
+import { DesktopUpdates } from "./components/DesktopUpdates";
 import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import {
   ArrowLeft,
@@ -655,6 +656,17 @@ export default function App() {
           </button>
         </div>
       )}
+      <DesktopUpdates
+        canInstall={
+          (!busy &&
+            !textEditor &&
+            !imagePoint &&
+            !passwordJob &&
+            !legacy &&
+            saveStatus === "Salvo no aparelho") ||
+          (!active && !busy)
+        }
+      />
       {!active ? (
         <main className="library-main">
           <section className="welcome">

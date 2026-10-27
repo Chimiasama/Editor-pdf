@@ -544,3 +544,41 @@ test("storage failure preserves the original and allows exporting before leaving
     page.getByRole("heading", { name: /Meus documentos/ }),
   ).toBeVisible();
 });
+
+test("desktop export uses the native save command and reports cancellation honestly", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).__desktopSaves = [];
+    (window as any).__cancelDesktopSave = false;
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: async (command: string, args: any) => {
+        if (command === "plugin:app|version") return "0.2.1";
+        if (command === "save_pdf") {
+          (window as any).__desktopSaves.push(args);
+          return !(window as any).__cancelDesktopSave;
+        }
+        throw new Error("Unexpected desktop command");
+      },
+    };
+  });
+  await openFixture(page);
+  await expect(
+    page.getByText(/Atualizações pelo app aguardam ativação/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Salvar cópia", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__desktopSaves.length))
+    .toBe(1);
+  const saved = await page.evaluate(() => (window as any).__desktopSaves[0]);
+  expect(saved.suggestedName).toBe("meu-livro_editado.pdf");
+  expect(saved.bytes.slice(0, 4)).toEqual([37, 80, 68, 70]);
+  await page.evaluate(() => {
+    (window as any).__cancelDesktopSave = true;
+  });
+  await page.getByRole("button", { name: "Salvar cópia", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Salvamento cancelado");
+  await expect(
+    page.getByRole("heading", { name: "meu-livro.pdf", exact: true }),
+  ).toBeVisible();
+});

@@ -230,3 +230,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .text-editor-dialog > form { overflow-y:auto; min-height:0; padding:0 4px 2px 0; scrollbar-width:thin; overscroll-behavior:contain; }
 .text-editor-dialog > .dialog-actions { flex-shrink:0; margin-top:12px; padding-top:13px; }
 @media(max-width:600px) { .text-editor-dialog > .dialog-actions .subtle { width:auto; margin:0 auto 0 0; } .text-editor-dialog > .dialog-actions {gap:5px;} .text-editor-dialog > .dialog-actions .button { padding:10px 9px; font-size:10px; } }
+.desktop-updates { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:10px; background:#f2f7f4; border-bottom:1px solid #dfe8e2; padding:8px 22px; font-size:11px; flex-shrink:0; }
+.desktop-updates > span:first-child {margin-right:auto;color:#547966;}
+.desktop-updates .button {min-height:34px;padding:7px 12px;font-size:11px;}

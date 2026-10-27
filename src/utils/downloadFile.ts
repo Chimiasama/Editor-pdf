@@ -1,3 +1,4 @@
+import { isDesktop } from "./desktop";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -5,6 +6,16 @@ import { Share } from "@capacitor/share";
  * Trigger file download directly in browser
  */
 export async function downloadFile(bytes: Uint8Array, fileName: string) {
+  if (isDesktop()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const saved = await invoke<boolean>("save_pdf", {
+      bytes: Array.from(bytes),
+      suggestedName: fileName,
+    });
+    if (!saved)
+      throw new Error("Salvamento cancelado. O documento continua aberto.");
+    return;
+  }
   if (Capacitor.isNativePlatform()) {
     const blob = new Blob([bytes.slice().buffer], { type: "application/pdf" });
     const base64 = await new Promise<string>((resolve, reject) => {
